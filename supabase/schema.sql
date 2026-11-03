@@ -15,19 +15,27 @@ create table if not exists public.profiles (
   email text not null,
   display_name text,
   status text not null default 'pending' check (status in ('pending','approved','blocked')),
-  role text not null default 'member' check (role in ('member','admin')),
+  role text not null default 'member' check (role in ('member','user','admin')),
   ai_shared_key_allowed boolean not null default false,
   created_at timestamptz not null default now(),
+  approved_at timestamptz,
   last_seen_at timestamptz
 );
+
+alter table public.profiles add column if not exists approved_at timestamptz;
+alter table public.profiles drop constraint if exists profiles_role_check;
+alter table public.profiles add constraint profiles_role_check check (role in ('member','user','admin'));
 
 -- Invites: emails pre-approved by the admin
 create table if not exists public.invites (
   email text primary key,
   invited_by uuid references public.profiles(id) on delete set null,
+  note text,
   created_at timestamptz not null default now(),
   used_at timestamptz
 );
+
+alter table public.invites add column if not exists note text;
 
 -- Resumes: existing Resume objects stored as jsonb
 create table if not exists public.resumes (
@@ -253,7 +261,40 @@ create trigger on_auth_user_created
   after insert on auth.users
   for each row execute function public.handle_new_user();
 
+-- Auto-approve any already-registered pending user when their email is added to public.invites
+create or replace function public.handle_invite_upserted()
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  if exists (
+    select 1 from public.profiles
+    where lower(email) = lower(new.email)
+      and status = 'pending'
+  ) then
+    update public.profiles
+    set status = 'approved',
+        approved_at = coalesce(approved_at, now())
+    where lower(email) = lower(new.email)
+      and status = 'pending';
+
+    update public.invites
+    set used_at = coalesce(used_at, now())
+    where lower(email) = lower(new.email);
+  end if;
+  return new;
+end;
+$$;
+
+drop trigger if exists on_invite_upserted on public.invites;
+create trigger on_invite_upserted
+  after insert or update on public.invites
+  for each row execute function public.handle_invite_upserted();
+
 -- Admin member stats RPC: returns counts only, never document contents
+drop function if exists public.admin_member_stats();
 create or replace function public.admin_member_stats()
 returns table (
   id uuid,
@@ -263,9 +304,10 @@ returns table (
   role text,
   ai_shared_key_allowed boolean,
   created_at timestamptz,
+  approved_at timestamptz,
   last_seen_at timestamptz,
   resume_count bigint,
-  letter_count bigint,
+  cover_letter_count bigint,
   job_count bigint,
   ai_calls_month bigint
 )
@@ -288,9 +330,10 @@ begin
     p.role,
     p.ai_shared_key_allowed,
     p.created_at,
+    p.approved_at,
     p.last_seen_at,
     (select count(*) from public.resumes r where r.owner_id = p.id) as resume_count,
-    (select count(*) from public.cover_letters c where c.owner_id = p.id) as letter_count,
+    (select count(*) from public.cover_letters c where c.owner_id = p.id) as cover_letter_count,
     (select count(*) from public.jobs j where j.owner_id = p.id) as job_count,
     coalesce((
       select sum(u.calls)::bigint
