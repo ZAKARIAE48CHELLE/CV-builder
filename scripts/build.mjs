@@ -1,11 +1,10 @@
 import { execSync } from "node:child_process";
 
-const isWindows = process.platform === "win32";
 const isInnerNextBuild =
   process.env.NEXT_PRIVATE_STANDALONE === "true" ||
   process.env.OPEN_NEXT_INNER_BUILD === "1";
 
-if (!isWindows && !isInnerNextBuild) {
+if (!isInnerNextBuild) {
   console.log("Building Next.js + OpenNext bundle for Cloudflare Workers...");
   execSync("pnpm exec opennextjs-cloudflare build", {
     stdio: "inherit",
@@ -15,3 +14,4 @@ if (!isWindows && !isInnerNextBuild) {
   console.log("Running next build...");
   execSync("pnpm exec next build", { stdio: "inherit" });
 }
+
