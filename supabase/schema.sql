@@ -561,3 +561,56 @@ create policy "user_files_delete_own"
     and public.is_approved()
   );
 
+-- -----------------------------------------------------------------------------
+-- 6. Backfill Existing Auth Users & Promote First User to Admin
+-- -----------------------------------------------------------------------------
+insert into public.profiles (
+  id,
+  email,
+  display_name,
+  status,
+  role,
+  ai_shared_key_allowed,
+  created_at,
+  last_seen_at
+)
+select
+  u.id,
+  lower(u.email),
+  coalesce(
+    u.raw_user_meta_data->>'display_name',
+    u.raw_user_meta_data->>'full_name',
+    split_part(u.email, '@', 1)
+  ),
+  'pending',
+  'member',
+  false,
+  coalesce(u.created_at, now()),
+  now()
+from auth.users u
+on conflict (id) do nothing;
+
+-- Promote the earliest user to approved admin if no admin exists yet
+do $$
+declare
+  v_first_uid uuid;
+begin
+  if not exists (select 1 from public.profiles where role = 'admin' and status = 'approved') then
+    select id into v_first_uid
+    from public.profiles
+    order by created_at asc
+    limit 1;
+
+    if v_first_uid is not null then
+      alter table public.profiles disable trigger trg_guard_profile_updates;
+      update public.profiles
+      set status = 'approved',
+          role = 'admin',
+          ai_shared_key_allowed = true
+      where id = v_first_uid;
+      alter table public.profiles enable trigger trg_guard_profile_updates;
+    end if;
+  end if;
+end $$;
+
+
