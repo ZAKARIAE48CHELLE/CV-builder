@@ -54,8 +54,9 @@ function migrateSingleResume(rawResume: unknown, rowSchemaVersion: number): Resu
     coverLetters: [],
     jobs: [],
   });
-  const res = migrated.resumes[0];
-  return ResumeSchema.parse(sanitizeResumeHtml(res));
+  const sanitized = sanitizeResumeHtml(migrated.resumes[0]);
+  const parsed = ResumeSchema.safeParse(sanitized);
+  return parsed.success ? parsed.data : sanitized;
 }
 
 export class SupabaseRepository implements Repository {

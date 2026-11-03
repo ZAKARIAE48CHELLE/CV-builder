@@ -60,7 +60,7 @@ export const EntryDesignSchema = z.object({
 
 export const DescriptionDesignSchema = z.object({
   bulletStyle: z.enum(["disc", "dash", "arrow", "square", "check", "numbered", "none"]).default("disc"),
-  bulletColor: z.enum(["accent", "text"]).default("text"),
+  bulletColor: z.string().default("text"),
   indent: z.number().min(0).max(36).default(12),
   bulletSpacing: z.number().min(0).max(12).default(2),
   showDescription: z.boolean().default(true),

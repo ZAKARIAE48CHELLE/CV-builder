@@ -11,6 +11,8 @@ import {
 } from "@/lib/ai/quota";
 import { isStoragePath, extractStorageObjectPath, STORAGE_PATH_PREFIX } from "@/lib/storage/userFiles";
 import { createInitialState } from "@/lib/migrations";
+import { ResumeSchema } from "@/lib/schema";
+import fs from "node:fs";
 
 describe("Multi-User Security & Data Layer", () => {
   describe("HTML Sanitizer (sanitizeRichHtml)", () => {
@@ -137,6 +139,19 @@ describe("Multi-User Security & Data Layer", () => {
       const exceeded = checkDailySharedQuota(31, 30);
       expect(exceeded.allowed).toBe(false);
       expect(exceeded.error).toContain("Daily shared AI limit");
+    });
+
+    it("parses CHELLE ZAKARIAE Resume from local db.json", () => {
+      if (fs.existsSync("data/db.json")) {
+        const raw = JSON.parse(fs.readFileSync("data/db.json", "utf8")).folio_user_data_v1;
+        const parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
+        const state = parsed.state || parsed;
+        const res = ResumeSchema.safeParse(state.resumes[0]);
+        if (!res.success) {
+          console.error("ZOD ERROR:", res.error.issues);
+        }
+        expect(res.success).toBe(true);
+      }
     });
   });
 });
