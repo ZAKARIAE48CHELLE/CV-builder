@@ -1,0 +1,104 @@
+name: CI/CD Pipeline (Tests, Security Audit & Cloudflare Pages)
+
+on:
+  push:
+    branches:
+      - master
+      - main
+  pull_request:
+    branches:
+      - master
+      - main
+  workflow_dispatch:
+
+env:
+  NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
+  NEXT_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.NEXT_PUBLIC_SUPABASE_ANON_KEY }}
+
+jobs:
+  test-and-build:
+    name: Unit Tests & Next.js Build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: "pnpm"
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Run Vitest unit & security test suite
+        run: pnpm test
+
+      - name: Build Next.js production bundle
+        run: pnpm build
+
+  supabase-security-audit:
+    name: Supabase RLS & Storage Leak Audit
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Run anonymous RLS & Storage security check
+        run: |
+          if [ -n "$NEXT_PUBLIC_SUPABASE_URL" ] && [ -n "$NEXT_PUBLIC_SUPABASE_ANON_KEY" ]; then
+            bash supabase/security_check.sh
+          else
+            echo "Skipping live Supabase audit (NEXT_PUBLIC_SUPABASE_URL / NEXT_PUBLIC_SUPABASE_ANON_KEY secrets not configured in GitHub repository settings)."
+          fi
+
+  cloudflare-deploy:
+    name: Deploy to Cloudflare
+    needs: [test-and-build, supabase-security-audit]
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main')
+    runs-on: ubuntu-latest
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Check Cloudflare deployment mode
+        id: cf_mode
+        run: |
+          if [ -n "$CLOUDFLARE_API_TOKEN" ] && [ -n "$CLOUDFLARE_ACCOUNT_ID" ]; then
+            echo "direct_wrangler=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "direct_wrangler=false" >> "$GITHUB_OUTPUT"
+            echo "ℹ️ Cloudflare Pages Git integration is active (or CLOUDFLARE_API_TOKEN / CLOUDFLARE_ACCOUNT_ID secrets are not set). Cloudflare will automatically build and deploy this push."
+          fi
+
+      - name: Setup pnpm
+        if: steps.cf_mode.outputs.direct_wrangler == 'true'
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node.js 22
+        if: steps.cf_mode.outputs.direct_wrangler == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: "pnpm"
+
+      - name: Install & Build for Cloudflare
+        if: steps.cf_mode.outputs.direct_wrangler == 'true'
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm build
+
+      - name: Publish to Cloudflare via Wrangler
+        if: steps.cf_mode.outputs.direct_wrangler == 'true'
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          command: deploy
