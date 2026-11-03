@@ -37,6 +37,7 @@ yarn-error.log*
 # local database file (kept on local machine only)
 /data/
 .open-next/
+.wrangler/
 
 # vercel
 .vercel
