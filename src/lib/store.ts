@@ -204,9 +204,19 @@ export interface FolioStoreState {
   // Global Settings & Backup
   updateSettings: (patch: Partial<AppSettings>) => void;
   exportBackupJson: () => string;
-  importBackupJson: (jsonString: string) => boolean;
+  importBackupJson: (jsonString: string) => Promise<ImportBackupResult>;
   clearAllData: () => Promise<void>;
   hardSave: () => Promise<boolean>;
+}
+
+export interface ImportBackupResult {
+  success: boolean;
+  resumesCount: number;
+  coverLettersCount: number;
+  jobsCount: number;
+  presetsCount: number;
+  firstResumeId?: string;
+  error?: string;
 }
 
 // Debounce timer for persistent saving
@@ -1697,16 +1707,80 @@ export const useFolioStore = create<FolioStoreState>((set, get) => ({
     return JSON.stringify(backup, null, 2);
   },
 
-  importBackupJson: (jsonString: string) => {
+  importBackupJson: async (jsonString: string): Promise<ImportBackupResult> => {
     try {
-      const parsed = JSON.parse(jsonString);
-      const migrated = migrateState(parsed);
+      let parsed: any;
+      try {
+        parsed = typeof jsonString === "string" ? JSON.parse(jsonString) : jsonString;
+      } catch (e: any) {
+        return {
+          success: false,
+          resumesCount: 0,
+          coverLettersCount: 0,
+          jobsCount: 0,
+          presetsCount: 0,
+          error: "Invalid JSON format: " + (e?.message || "Failed to parse JSON"),
+        };
+      }
+
+      if (!parsed || typeof parsed !== "object") {
+        return {
+          success: false,
+          resumesCount: 0,
+          coverLettersCount: 0,
+          jobsCount: 0,
+          presetsCount: 0,
+          error: "JSON root must be an object or array.",
+        };
+      }
+
+      // Handle nested wrappers
+      let target = parsed;
+      if (target.folio_user_data_v1) {
+        try {
+          target =
+            typeof target.folio_user_data_v1 === "string"
+              ? JSON.parse(target.folio_user_data_v1)
+              : target.folio_user_data_v1;
+        } catch {}
+      }
+      if (target.state && typeof target.state === "object") {
+        target = target.state;
+      }
+
+      // Extract style presets if present in raw export
+      const rawPresets: StylePreset[] = Array.isArray(target.stylePresets)
+        ? target.stylePresets
+        : Array.isArray(target.customPresets)
+        ? target.customPresets
+        : Array.isArray(target.presets)
+        ? target.presets
+        : [];
+
+      // Run state migration
+      const migrated = migrateState(target);
+
+      if (
+        migrated.resumes.length === 0 &&
+        migrated.coverLetters.length === 0 &&
+        migrated.jobs.length === 0 &&
+        rawPresets.length === 0
+      ) {
+        return {
+          success: false,
+          resumesCount: 0,
+          coverLettersCount: 0,
+          jobsCount: 0,
+          presetsCount: 0,
+          error: "No valid resumes, cover letters, jobs, or style presets found in this file.",
+        };
+      }
 
       // Remap IDs so importing a backup creates fresh documents without ID collisions
       const idMap = new Map<string, string>();
       const remappedResumes: Resume[] = migrated.resumes.map((r) => {
         const newId = newDocId("res");
-        idMap.set(r.id, newId);
+        if (r.id) idMap.set(r.id, newId);
         return {
           ...r,
           id: newId,
@@ -1717,41 +1791,101 @@ export const useFolioStore = create<FolioStoreState>((set, get) => ({
       const remappedLetters: CoverLetter[] = (migrated.coverLetters || []).map((cl) => ({
         ...cl,
         id: newDocId("cl"),
-        linkedResumeId: cl.linkedResumeId ? idMap.get(cl.linkedResumeId) || cl.linkedResumeId : undefined,
+        linkedResumeId: cl.linkedResumeId
+          ? idMap.get(cl.linkedResumeId) || cl.linkedResumeId
+          : undefined,
       }));
 
       const remappedJobs: JobApplication[] = (migrated.jobs || []).map((j) => ({
         ...j,
         id: newDocId("job"),
-        linkedResumeId: j.linkedResumeId ? idMap.get(j.linkedResumeId) || j.linkedResumeId : undefined,
+        linkedResumeId: j.linkedResumeId
+          ? idMap.get(j.linkedResumeId) || j.linkedResumeId
+          : undefined,
+      }));
+
+      const remappedPresets: StylePreset[] = rawPresets.map((p) => ({
+        ...p,
+        id: newDocId("preset"),
       }));
 
       if (isSupabaseConfigured() && get().userProfile?.status === "approved") {
         const repo = getActiveRepository();
-        Promise.all([
-          ...remappedResumes.map((r) => repo.createResume(r)),
-          ...remappedLetters.map((cl) => repo.createCoverLetter(cl)),
-          ...remappedJobs.map((j, idx) => repo.createJob(j, idx)),
-        ]).catch((e) => console.error("Failed to sync imported backup to Supabase:", e));
+        const newResumeVersions: Record<string, number> = {};
+        const newLetterVersions: Record<string, number> = {};
+
+        // Persist all to Supabase in parallel
+        await Promise.all([
+          ...remappedResumes.map(async (r) => {
+            try {
+              const res = await repo.createResume(r);
+              newResumeVersions[r.id] = res.version;
+            } catch (err) {
+              console.error("Failed to save imported resume to Supabase:", r.title, err);
+            }
+          }),
+          ...remappedLetters.map(async (cl) => {
+            try {
+              const res = await repo.createCoverLetter(cl);
+              newLetterVersions[cl.id] = res.version;
+            } catch (err) {
+              console.error("Failed to save imported letter to Supabase:", cl.title, err);
+            }
+          }),
+          ...remappedJobs.map(async (j, idx) => {
+            try {
+              await repo.createJob(j, idx);
+            } catch (err) {
+              console.error("Failed to save imported job to Supabase:", j.company, err);
+            }
+          }),
+          ...remappedPresets.map(async (p) => {
+            try {
+              await repo.savePreset(p);
+            } catch (err) {
+              console.error("Failed to save imported preset to Supabase:", p.name, err);
+            }
+          }),
+        ]);
 
         set((state) => ({
           resumes: [...remappedResumes, ...state.resumes],
           coverLetters: [...remappedLetters, ...state.coverLetters],
           jobs: [...remappedJobs, ...state.jobs],
+          customPresets: [...remappedPresets, ...state.customPresets],
+          resumeVersions: { ...state.resumeVersions, ...newResumeVersions },
+          coverLetterVersions: { ...state.coverLetterVersions, ...newLetterVersions },
+          saveStatus: "saved",
         }));
       } else {
-        set({
-          resumes: remappedResumes,
-          coverLetters: remappedLetters,
-          jobs: remappedJobs,
-          settings: { ...migrated.settings, ...loadByokSettings() },
-        });
-        get().saveToStorage();
+        set((state) => ({
+          resumes: [...remappedResumes, ...state.resumes],
+          coverLetters: [...remappedLetters, ...state.coverLetters],
+          jobs: [...remappedJobs, ...state.jobs],
+          customPresets: [...remappedPresets, ...state.customPresets],
+          settings: { ...migrated.settings, ...state.settings, ...loadByokSettings() },
+        }));
+        await get().saveToStorage();
       }
-      return true;
-    } catch (e) {
+
+      return {
+        success: true,
+        resumesCount: remappedResumes.length,
+        coverLettersCount: remappedLetters.length,
+        jobsCount: remappedJobs.length,
+        presetsCount: remappedPresets.length,
+        firstResumeId: remappedResumes[0]?.id,
+      };
+    } catch (e: any) {
       console.error("Failed to parse or restore backup:", e);
-      return false;
+      return {
+        success: false,
+        resumesCount: 0,
+        coverLettersCount: 0,
+        jobsCount: 0,
+        presetsCount: 0,
+        error: e?.message || "Failed to import backup.",
+      };
     }
   },
 

@@ -73,13 +73,24 @@ export default function SettingsPage() {
     if (!file) return;
 
     const reader = new FileReader();
-    reader.onload = (event) => {
+    reader.onload = async (event) => {
       const content = event.target?.result as string;
-      const ok = importBackupJson(content);
-      if (ok) {
-        alert("Backup restored successfully!");
+      const res = await importBackupJson(content);
+      if (res.success) {
+        const parts: string[] = [];
+        if (res.resumesCount > 0)
+          parts.push(`${res.resumesCount} resume${res.resumesCount > 1 ? "s" : ""}`);
+        if (res.coverLettersCount > 0)
+          parts.push(
+            `${res.coverLettersCount} cover letter${res.coverLettersCount > 1 ? "s" : ""}`
+          );
+        if (res.jobsCount > 0)
+          parts.push(`${res.jobsCount} job application${res.jobsCount > 1 ? "s" : ""}`);
+        if (res.presetsCount > 0)
+          parts.push(`${res.presetsCount} style preset${res.presetsCount > 1 ? "s" : ""}`);
+        alert(`Backup restored successfully: ${parts.join(", ")}!`);
       } else {
-        alert("Failed to restore backup. Invalid JSON file format.");
+        alert(`Failed to restore backup: ${res.error || "Invalid JSON file format."}`);
       }
     };
     reader.readAsText(file);

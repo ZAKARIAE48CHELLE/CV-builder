@@ -15,7 +15,31 @@ export function migrateState(rawState: unknown): PersistedState {
     return createInitialState();
   }
 
-  const state = rawState as Partial<PersistedState> & { version?: number };
+  let unwrapped: any = rawState;
+  if (unwrapped.folio_user_data_v1) {
+    try {
+      unwrapped =
+        typeof unwrapped.folio_user_data_v1 === "string"
+          ? JSON.parse(unwrapped.folio_user_data_v1)
+          : unwrapped.folio_user_data_v1;
+    } catch {}
+  }
+  if (unwrapped.state && typeof unwrapped.state === "object") {
+    unwrapped = unwrapped.state;
+  }
+
+  // Handle single resume JSON
+  if (
+    !Array.isArray(unwrapped.resumes) &&
+    unwrapped.sections &&
+    (unwrapped.personal || unwrapped.title)
+  ) {
+    unwrapped = { ...unwrapped, resumes: [unwrapped] };
+  } else if (Array.isArray(unwrapped)) {
+    unwrapped = { resumes: unwrapped };
+  }
+
+  const state = unwrapped as Partial<PersistedState> & { version?: number };
   const currentVersion = state.schemaVersion ?? state.version ?? 0;
 
   let migratedResumes: Resume[] = Array.isArray(state.resumes) ? (state.resumes as Resume[]) : [];

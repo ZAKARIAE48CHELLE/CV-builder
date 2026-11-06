@@ -64,7 +64,7 @@ export const ImportModal: React.FC<ImportModalProps> = ({
   onClose,
   onImportComplete,
 }) => {
-  const { settings, userProfile, createResume, updateResume } = useFolioStore();
+  const { settings, userProfile, createResume, updateResume, importBackupJson } = useFolioStore();
   const [activeTab, setActiveTab] = useState<"upload" | "paste">("upload");
   const [pastedText, setPastedText] = useState("");
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
@@ -96,6 +96,31 @@ export const ImportModal: React.FC<ImportModalProps> = ({
     if (!rawText.trim()) {
       setErrorMsg("Please provide text or upload a document to proceed.");
       return;
+    }
+
+    const trimmed = rawText.trim();
+    if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
+      try {
+        const parsed = JSON.parse(trimmed);
+        if (parsed && typeof parsed === "object") {
+          setIsLoading(true);
+          const res = await importBackupJson(trimmed);
+          if (res.success) {
+            if (res.firstResumeId) {
+              onImportComplete(res.firstResumeId);
+            } else {
+              onClose();
+            }
+            return;
+          } else {
+            setErrorMsg(res.error || "Failed to import JSON data.");
+            setIsLoading(false);
+            return;
+          }
+        }
+      } catch {
+        // Fall back to normal text extraction
+      }
     }
 
     setIsLoading(true);
@@ -155,6 +180,33 @@ export const ImportModal: React.FC<ImportModalProps> = ({
       setErrorMsg("Imported file must be 10 MB or smaller.");
       return;
     }
+
+    const ext = selectedFile.name.split(".").pop()?.toLowerCase();
+    if (ext === "json") {
+      setIsLoading(true);
+      setErrorMsg(null);
+      try {
+        const text = await selectedFile.text();
+        const res = await importBackupJson(text);
+        if (res.success) {
+          if (res.firstResumeId) {
+            onImportComplete(res.firstResumeId);
+          } else {
+            onClose();
+          }
+          return;
+        } else {
+          setErrorMsg(res.error || "Failed to import JSON file.");
+          setIsLoading(false);
+          return;
+        }
+      } catch (err: any) {
+        setErrorMsg(err?.message || "Failed to parse JSON file.");
+        setIsLoading(false);
+        return;
+      }
+    }
+
     setIsLoading(true);
     setErrorMsg(null);
     try {
@@ -310,7 +362,7 @@ export const ImportModal: React.FC<ImportModalProps> = ({
                       : "text-neutral-500 hover:text-neutral-800 dark:hover:text-neutral-200"
                   }`}
                 >
-                  Upload Document (PDF / DOCX / TXT)
+                  Upload Document (PDF / DOCX / TXT / JSON)
                 </button>
                 <button
                   type="button"
@@ -321,7 +373,7 @@ export const ImportModal: React.FC<ImportModalProps> = ({
                       : "text-neutral-500 hover:text-neutral-800 dark:hover:text-neutral-200"
                   }`}
                 >
-                  Paste Raw Text
+                  Paste Raw Text / JSON
                 </button>
               </div>
 
@@ -330,7 +382,7 @@ export const ImportModal: React.FC<ImportModalProps> = ({
                   <input
                     type="file"
                     id="resume-file-input"
-                    accept=".pdf,.docx,.doc,.txt"
+                    accept=".pdf,.docx,.doc,.txt,.json,application/json"
                     onChange={(e) => setSelectedFile(e.target.files?.[0] || null)}
                     className="hidden"
                   />
@@ -342,10 +394,10 @@ export const ImportModal: React.FC<ImportModalProps> = ({
                       <UploadCloud className="w-8 h-8" />
                     </div>
                     <span className="text-sm font-semibold text-neutral-900 dark:text-neutral-100">
-                      {selectedFile ? selectedFile.name : "Click to browse or drop resume file"}
+                      {selectedFile ? selectedFile.name : "Click to browse or drop resume or backup file"}
                     </span>
                     <span className="text-xs text-neutral-500">
-                      Supports PDF, DOCX, DOC, and TXT up to 10MB
+                      Supports PDF, DOCX, DOC, TXT, and Folio JSON backups up to 10MB
                     </span>
                   </label>
                 </div>

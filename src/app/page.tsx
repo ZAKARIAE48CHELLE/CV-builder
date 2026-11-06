@@ -37,6 +37,7 @@ export default function DashboardPage() {
     duplicateCoverLetter,
     deleteCoverLetter,
     exportBackupJson,
+    importBackupJson,
   } = useFolioStore();
 
   const [activeTab, setActiveTab] = useState<"resumes" | "letters">("resumes");
@@ -58,6 +59,35 @@ export default function DashboardPage() {
     a.download = `${sanitizeFilename(resume.title)}.json`;
     a.click();
     URL.revokeObjectURL(url);
+  };
+
+  const handleImportJsonFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    try {
+      const text = await file.text();
+      const res = await importBackupJson(text);
+      if (res.success) {
+        const parts: string[] = [];
+        if (res.resumesCount > 0)
+          parts.push(`${res.resumesCount} resume${res.resumesCount > 1 ? "s" : ""}`);
+        if (res.coverLettersCount > 0)
+          parts.push(
+            `${res.coverLettersCount} cover letter${res.coverLettersCount > 1 ? "s" : ""}`
+          );
+        if (res.jobsCount > 0)
+          parts.push(`${res.jobsCount} job application${res.jobsCount > 1 ? "s" : ""}`);
+        if (res.presetsCount > 0)
+          parts.push(`${res.presetsCount} style preset${res.presetsCount > 1 ? "s" : ""}`);
+        alert(`Successfully imported: ${parts.join(", ")}!`);
+      } else {
+        alert(`Failed to import JSON: ${res.error || "Unknown error"}`);
+      }
+    } catch (err: any) {
+      alert(`Error reading JSON file: ${err?.message || "Invalid file"}`);
+    } finally {
+      e.target.value = "";
+    }
   };
 
   const handleCreateNewResume = (title: string, templateId: string) => {
@@ -120,6 +150,20 @@ export default function DashboardPage() {
               <Download className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />
               Backup All
             </button>
+
+            <label
+              title="Import a JSON backup or exported resume"
+              className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl border border-neutral-300 dark:border-neutral-700 hover:bg-neutral-100 dark:hover:bg-neutral-800 text-xs font-semibold text-neutral-800 dark:text-neutral-200 shadow-2xs transition-all cursor-pointer"
+            >
+              <UploadCloud className="w-4 h-4 text-blue-600 dark:text-blue-400" />
+              Import JSON
+              <input
+                type="file"
+                accept=".json,application/json"
+                className="hidden"
+                onChange={handleImportJsonFile}
+              />
+            </label>
 
             <button
               type="button"

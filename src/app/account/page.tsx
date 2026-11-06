@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { Navbar } from "@/components/common/Navbar";
 import { useFolioStore } from "@/lib/store";
 import { getSupabaseBrowserClient, isSupabaseConfigured } from "@/lib/supabase/client";
+import { SCHEMA_VERSION } from "@/config";
 import {
   User,
   Lock,
@@ -15,6 +16,10 @@ import {
   AlertTriangle,
   Loader2,
   Sparkles,
+  UploadCloud,
+  FileText,
+  Mail,
+  Briefcase,
 } from "lucide-react";
 
 export default function AccountPage() {
@@ -30,6 +35,7 @@ export default function AccountPage() {
     coverLetters,
     jobs,
     customPresets,
+    importBackupJson,
   } = useFolioStore();
 
   const [displayName, setDisplayName] = useState("");
@@ -39,6 +45,21 @@ export default function AccountPage() {
   const [newPassword, setNewPassword] = useState("");
   const [savingPassword, setSavingPassword] = useState(false);
   const [passwordMsg, setPasswordMsg] = useState<string | null>(null);
+
+  // JSON Import state
+  const [importJsonText, setImportJsonText] = useState<string | null>(null);
+  const [importFileName, setImportFileName] = useState<string | null>(null);
+  const [importPreview, setImportPreview] = useState<{
+    resumes: number;
+    coverLetters: number;
+    jobs: number;
+    stylePresets: number;
+    accountEmail?: string;
+    exportedAt?: string;
+  } | null>(null);
+  const [importingData, setImportingData] = useState(false);
+  const [importSuccessMsg, setImportSuccessMsg] = useState<string | null>(null);
+  const [importErrorMsg, setImportErrorMsg] = useState<string | null>(null);
 
   const [confirmEmail, setConfirmEmail] = useState("");
   const [deleting, setDeleting] = useState(false);
@@ -107,6 +128,7 @@ export default function AccountPage() {
 
   const handleExportAllMyData = () => {
     const payload = {
+      schemaVersion: SCHEMA_VERSION,
       exportedAt: new Date().toISOString(),
       account: userProfile
         ? {
@@ -129,6 +151,117 @@ export default function AccountPage() {
     a.download = `folio_account_export_${dateStr}.json`;
     a.click();
     URL.revokeObjectURL(url);
+  };
+
+  const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setImportSuccessMsg(null);
+    setImportErrorMsg(null);
+    setImportFileName(file.name);
+
+    try {
+      const text = await file.text();
+      setImportJsonText(text);
+
+      let parsed: any;
+      try {
+        parsed = JSON.parse(text);
+      } catch {
+        setImportErrorMsg("The selected file is not a valid JSON document.");
+        setImportPreview(null);
+        return;
+      }
+
+      let target = parsed;
+      if (target.folio_user_data_v1) {
+        try {
+          target =
+            typeof target.folio_user_data_v1 === "string"
+              ? JSON.parse(target.folio_user_data_v1)
+              : target.folio_user_data_v1;
+        } catch {}
+      }
+      if (target.state && typeof target.state === "object") {
+        target = target.state;
+      }
+
+      let resumesList: any[] = [];
+      if (Array.isArray(target.resumes)) {
+        resumesList = target.resumes;
+      } else if (Array.isArray(target)) {
+        resumesList = target;
+      } else if (target && target.sections && (target.personal || target.title)) {
+        resumesList = [target];
+      }
+
+      const lettersList = Array.isArray(target.coverLetters) ? target.coverLetters : [];
+      const jobsList = Array.isArray(target.jobs) ? target.jobs : [];
+      const presetsList = Array.isArray(target.stylePresets)
+        ? target.stylePresets
+        : Array.isArray(target.customPresets)
+        ? target.customPresets
+        : Array.isArray(target.presets)
+        ? target.presets
+        : [];
+
+      if (
+        resumesList.length === 0 &&
+        lettersList.length === 0 &&
+        jobsList.length === 0 &&
+        presetsList.length === 0
+      ) {
+        setImportErrorMsg("No resumes, cover letters, jobs, or style presets found in this file.");
+        setImportPreview(null);
+        return;
+      }
+
+      setImportPreview({
+        resumes: resumesList.length,
+        coverLetters: lettersList.length,
+        jobs: jobsList.length,
+        stylePresets: presetsList.length,
+        accountEmail: target.account?.email || target.email,
+        exportedAt: target.exportedAt,
+      });
+    } catch (err: any) {
+      setImportErrorMsg(err?.message || "Failed to read JSON file.");
+      setImportPreview(null);
+    }
+  };
+
+  const handleExecuteImport = async () => {
+    if (!importJsonText) return;
+    setImportingData(true);
+    setImportErrorMsg(null);
+    setImportSuccessMsg(null);
+
+    try {
+      const res = await importBackupJson(importJsonText);
+      if (res.success) {
+        const parts: string[] = [];
+        if (res.resumesCount > 0)
+          parts.push(`${res.resumesCount} resume${res.resumesCount > 1 ? "s" : ""}`);
+        if (res.coverLettersCount > 0)
+          parts.push(
+            `${res.coverLettersCount} cover letter${res.coverLettersCount > 1 ? "s" : ""}`
+          );
+        if (res.jobsCount > 0)
+          parts.push(`${res.jobsCount} job application${res.jobsCount > 1 ? "s" : ""}`);
+        if (res.presetsCount > 0)
+          parts.push(`${res.presetsCount} style preset${res.presetsCount > 1 ? "s" : ""}`);
+        setImportSuccessMsg(`Successfully imported ${parts.join(", ")}!`);
+        setImportPreview(null);
+        setImportJsonText(null);
+        setImportFileName(null);
+      } else {
+        setImportErrorMsg(res.error || "Failed to import JSON data.");
+      }
+    } catch (err: any) {
+      setImportErrorMsg(err?.message || "An unexpected error occurred during import.");
+    } finally {
+      setImportingData(false);
+    }
   };
 
   const handleDeleteAccount = async () => {
@@ -342,6 +475,134 @@ export default function AccountPage() {
             <Download className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />
             Export all my data (JSON)
           </button>
+        </section>
+
+        {/* Import My Data (JSON) */}
+        <section className="rounded-2xl border border-stone-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 p-6 shadow-xs space-y-4">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-stone-100 dark:border-zinc-800/80 pb-4">
+            <div>
+              <div className="flex items-center gap-2">
+                <UploadCloud className="w-4 h-4 text-blue-600 dark:text-blue-400" />
+                <h2 className="text-sm font-bold">Import Data (JSON)</h2>
+              </div>
+              <p className="text-xs text-stone-500 dark:text-zinc-400 mt-0.5">
+                Restore or import a JSON file exported from Folio (account export, backup, or single resume).
+              </p>
+            </div>
+
+            <label className="inline-flex items-center gap-2 rounded-xl bg-stone-900 dark:bg-amber-500 hover:bg-stone-800 dark:hover:bg-amber-400 text-white dark:text-zinc-950 px-4 py-2.5 text-xs font-semibold shrink-0 cursor-pointer transition-colors shadow-2xs">
+              <UploadCloud className="w-4 h-4" />
+              <span>{importFileName ? "Choose another file" : "Select JSON File"}</span>
+              <input
+                type="file"
+                accept=".json,application/json"
+                onChange={handleFileChange}
+                className="hidden"
+              />
+            </label>
+          </div>
+
+          {importErrorMsg && (
+            <div className="flex items-start gap-2 rounded-xl border border-red-200 dark:border-red-900/60 bg-red-50 dark:bg-red-950/40 p-3.5 text-xs text-red-700 dark:text-red-300">
+              <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
+              <span>{importErrorMsg}</span>
+            </div>
+          )}
+
+          {importSuccessMsg && (
+            <div className="flex items-start gap-2 rounded-xl border border-emerald-200 dark:border-emerald-900/60 bg-emerald-50 dark:bg-emerald-950/40 p-3.5 text-xs text-emerald-700 dark:text-emerald-300">
+              <Check className="w-4 h-4 shrink-0 mt-0.5" />
+              <span>{importSuccessMsg}</span>
+            </div>
+          )}
+
+          {importPreview && (
+            <div className="rounded-xl border border-stone-200 dark:border-zinc-800 bg-stone-50/70 dark:bg-zinc-800/40 p-4 space-y-3">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs">
+                <div className="font-semibold text-stone-800 dark:text-zinc-200 flex items-center gap-2">
+                  <FileText className="w-4 h-4 text-stone-500" />
+                  <span>{importFileName}</span>
+                </div>
+                {importPreview.exportedAt && (
+                  <span className="text-[11px] text-stone-500 dark:text-zinc-400">
+                    Exported: {new Date(importPreview.exportedAt).toLocaleDateString()}
+                  </span>
+                )}
+              </div>
+
+              {importPreview.accountEmail && (
+                <div className="text-[11px] text-stone-500 dark:text-zinc-400">
+                  Original Account:{" "}
+                  <span className="font-mono text-stone-700 dark:text-zinc-300">
+                    {importPreview.accountEmail}
+                  </span>
+                </div>
+              )}
+
+              {/* Badges */}
+              <div className="flex flex-wrap items-center gap-2 pt-1">
+                {importPreview.resumes > 0 && (
+                  <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-blue-100 dark:bg-blue-950/60 text-blue-700 dark:text-blue-300 text-xs font-semibold">
+                    <FileText className="w-3.5 h-3.5" />
+                    {importPreview.resumes} Resume{importPreview.resumes > 1 ? "s" : ""}
+                  </span>
+                )}
+                {importPreview.coverLetters > 0 && (
+                  <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-purple-100 dark:bg-purple-950/60 text-purple-700 dark:text-purple-300 text-xs font-semibold">
+                    <Mail className="w-3.5 h-3.5" />
+                    {importPreview.coverLetters} Cover Letter
+                    {importPreview.coverLetters > 1 ? "s" : ""}
+                  </span>
+                )}
+                {importPreview.jobs > 0 && (
+                  <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-amber-100 dark:bg-amber-950/60 text-amber-700 dark:text-amber-300 text-xs font-semibold">
+                    <Briefcase className="w-3.5 h-3.5" />
+                    {importPreview.jobs} Job Application{importPreview.jobs > 1 ? "s" : ""}
+                  </span>
+                )}
+                {importPreview.stylePresets > 0 && (
+                  <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-emerald-100 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-300 text-xs font-semibold">
+                    <Sparkles className="w-3.5 h-3.5" />
+                    {importPreview.stylePresets} Style Preset
+                    {importPreview.stylePresets > 1 ? "s" : ""}
+                  </span>
+                )}
+              </div>
+
+              <div className="flex items-center gap-3 pt-2">
+                <button
+                  type="button"
+                  onClick={handleExecuteImport}
+                  disabled={importingData}
+                  className="inline-flex items-center justify-center gap-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-2 text-xs font-semibold shadow-xs disabled:opacity-50"
+                >
+                  {importingData ? (
+                    <>
+                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                      Importing...
+                    </>
+                  ) : (
+                    <>
+                      <Check className="w-3.5 h-3.5" />
+                      Import to My Account
+                    </>
+                  )}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setImportPreview(null);
+                    setImportJsonText(null);
+                    setImportFileName(null);
+                  }}
+                  disabled={importingData}
+                  className="rounded-xl border border-stone-200 dark:border-zinc-700 px-3 py-2 text-xs text-stone-600 dark:text-zinc-400 hover:bg-stone-100 dark:hover:bg-zinc-800"
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          )}
         </section>
 
         {/* Delete My Account */}

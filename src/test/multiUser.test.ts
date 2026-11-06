@@ -12,6 +12,7 @@ import {
 import { isStoragePath, extractStorageObjectPath, STORAGE_PATH_PREFIX } from "@/lib/storage/userFiles";
 import { createInitialState } from "@/lib/migrations";
 import { ResumeSchema } from "@/lib/schema";
+import { useFolioStore } from "@/lib/store";
 import fs from "node:fs";
 
 describe("Multi-User Security & Data Layer", () => {
@@ -152,6 +153,119 @@ describe("Multi-User Security & Data Layer", () => {
         }
         expect(res.success).toBe(true);
       }
+    });
+  });
+
+  describe("JSON Import (Same format as Export)", () => {
+    it("imports account export JSON payload successfully", async () => {
+      const store = useFolioStore.getState();
+      const exportPayload = {
+        schemaVersion: 2,
+        exportedAt: new Date().toISOString(),
+        account: {
+          email: "user@example.com",
+          displayName: "Alex Test",
+        },
+        resumes: [
+          {
+            id: "old-res-1",
+            title: "Frontend Engineer Resume",
+            personal: { fullName: "Alex Test", email: "alex@example.com" },
+            sections: [
+              {
+                id: "sec-1",
+                type: "experience",
+                heading: "Experience",
+                items: [
+                  {
+                    id: "it-1",
+                    title: "Lead Engineer",
+                    subtitle: "Acme Corp",
+                    description: "<p>Built scalable web apps</p>",
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+        coverLetters: [
+          {
+            id: "old-cl-1",
+            title: "Acme Cover Letter",
+            linkedResumeId: "old-res-1",
+            recipient: { name: "Hiring Manager" },
+            body: "<p>Dear Team...</p>",
+          },
+        ],
+        jobs: [
+          {
+            id: "old-job-1",
+            company: "Acme Corp",
+            role: "Lead Engineer",
+            stage: "applied",
+            linkedResumeId: "old-res-1",
+          },
+        ],
+        stylePresets: [
+          {
+            id: "preset-1",
+            name: "Modern Minimalist",
+            applicableTypes: ["experience"],
+            overrides: {},
+          },
+        ],
+      };
+
+      const result = await store.importBackupJson(JSON.stringify(exportPayload));
+      expect(result.success).toBe(true);
+      expect(result.resumesCount).toBe(1);
+      expect(result.coverLettersCount).toBe(1);
+      expect(result.jobsCount).toBe(1);
+      expect(result.presetsCount).toBe(1);
+
+      // Verify state was populated
+      const state = useFolioStore.getState();
+      const importedResume = state.resumes.find((r) => r.title === "Frontend Engineer Resume");
+      expect(importedResume).toBeDefined();
+      expect(importedResume?.id).not.toBe("old-res-1"); // ID was remapped
+
+      const importedLetter = state.coverLetters.find((c) => c.title === "Acme Cover Letter");
+      expect(importedLetter).toBeDefined();
+      expect(importedLetter?.linkedResumeId).toBe(importedResume?.id); // Link preserved!
+
+      const importedJob = state.jobs.find((j) => j.company === "Acme Corp");
+      expect(importedJob).toBeDefined();
+      expect(importedJob?.linkedResumeId).toBe(importedResume?.id); // Link preserved!
+    });
+
+    it("imports single resume JSON directly", async () => {
+      const store = useFolioStore.getState();
+      const singleResume = {
+        id: "single-1",
+        title: "Single Resume Import",
+        personal: { fullName: "Sarah Connor" },
+        sections: [],
+      };
+
+      const result = await store.importBackupJson(JSON.stringify(singleResume));
+      expect(result.success).toBe(true);
+      expect(result.resumesCount).toBe(1);
+      expect(result.firstResumeId).toBeDefined();
+
+      const state = useFolioStore.getState();
+      const found = state.resumes.find((r) => r.title === "Single Resume Import");
+      expect(found).toBeDefined();
+    });
+
+    it("returns error for invalid JSON or empty structure", async () => {
+      const store = useFolioStore.getState();
+      const resBad = await store.importBackupJson("not valid json");
+      expect(resBad.success).toBe(false);
+      expect(resBad.error).toContain("Invalid JSON format");
+
+      const resEmpty = await store.importBackupJson(JSON.stringify({ someKey: 123 }));
+      expect(resEmpty.success).toBe(false);
+      expect(resEmpty.error).toContain("No valid resumes");
     });
   });
 });
