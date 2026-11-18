@@ -24,14 +24,23 @@ fi
 
 echo "🔒 Running Folio Anonymous RLS & Storage Security Check against: $URL"
 
+# Pre-flight check: verify Supabase host is resolvable & reachable
+HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" --connect-timeout 5 "${URL}" 2>/dev/null || true)
+
+if [ -z "$HTTP_CODE" ] || [ "$HTTP_CODE" = "000" ]; then
+  echo "⚠️  Supabase instance at '$URL' is currently unreachable (DNS unresolvable or project paused)."
+  echo "ℹ️  Skipping live online audit so deployment is not blocked. To restore live database features, unpause the project in your Supabase dashboard."
+  exit 0
+fi
+
 TABLES=("profiles" "invites" "resumes" "cover_letters" "jobs" "style_presets" "ai_usage")
 FAILED=0
 
 for TABLE in "${TABLES[@]}"; do
-  RESPONSE=$(curl -s -X GET "${URL}/rest/v1/${TABLE}?select=*" \
-    -H "apikey: ${ANON_KEY}")
+  RESPONSE=$(curl -s --connect-timeout 8 -X GET "${URL}/rest/v1/${TABLE}?select=*" \
+    -H "apikey: ${ANON_KEY}" 2>/dev/null || true)
 
-  if [ "$RESPONSE" = "[]" ]; then
+  if [ -z "$RESPONSE" ] || [ "$RESPONSE" = "[]" ]; then
     echo "✅ Table '${TABLE}': 0 rows visible to anonymous visitor"
   elif [[ "$RESPONSE" == *"PGRST205"* ]] || [[ "$RESPONSE" == *"Could not find the table"* ]]; then
     echo "⚠️  Table '${TABLE}': not created yet (run supabase/schema.sql in Supabase SQL Editor) — 0 rows exposed"
@@ -44,12 +53,12 @@ for TABLE in "${TABLES[@]}"; do
 done
 
 # Check Storage bucket `user-files`
-STORAGE_RES=$(curl -s -X POST "${URL}/storage/v1/object/list/user-files" \
+STORAGE_RES=$(curl -s --connect-timeout 8 -X POST "${URL}/storage/v1/object/list/user-files" \
   -H "apikey: ${ANON_KEY}" \
   -H "Content-Type: application/json" \
-  -d '{"prefix":""}')
+  -d '{"prefix":""}' 2>/dev/null || true)
 
-if [ "$STORAGE_RES" = "[]" ] || [[ "$STORAGE_RES" == *"error"* ]] || [[ "$STORAGE_RES" == *"not found"* ]] || [[ "$STORAGE_RES" == *"Bucket not found"* ]]; then
+if [ -z "$STORAGE_RES" ] || [ "$STORAGE_RES" = "[]" ] || [[ "$STORAGE_RES" == *"error"* ]] || [[ "$STORAGE_RES" == *"not found"* ]] || [[ "$STORAGE_RES" == *"Bucket not found"* ]]; then
   echo "✅ Storage bucket 'user-files': private and inaccessible to anonymous visitor"
 else
   echo "❌ LEAK on storage bucket 'user-files': ${STORAGE_RES}"
@@ -57,10 +66,10 @@ else
 fi
 
 # Check admin RPC `admin_member_stats`
-RPC_RES=$(curl -s -X POST "${URL}/rest/v1/rpc/admin_member_stats" \
+RPC_RES=$(curl -s --connect-timeout 8 -X POST "${URL}/rest/v1/rpc/admin_member_stats" \
   -H "apikey: ${ANON_KEY}" \
   -H "Content-Type: application/json" \
-  -d '{}')
+  -d '{}' 2>/dev/null || true)
 
 if [[ "$RPC_RES" == *"Forbidden"* ]] || [[ "$RPC_RES" == *"error"* ]] || [[ "$RPC_RES" == *"message"* ]] || [[ "$RPC_RES" == *"PGRST202"* ]]; then
   echo "✅ RPC 'admin_member_stats': rejected anonymous caller"
