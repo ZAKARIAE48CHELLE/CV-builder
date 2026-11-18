@@ -381,3 +381,378 @@ export function sanitizeAndValidateParsedDraft(rawDraft: any): ParsedResumeDraft
 
   return { personal, sections };
 }
+
+export const MOCK_RESUME_JSON_TEMPLATE = {
+  title: "Alex Rivera - Full-Stack Engineer Resume",
+  personal: {
+    fullName: "Alex Rivera",
+    jobTitle: "Senior Full-Stack Engineer",
+    email: "alex.rivera@example.com",
+    phone: "+1 (555) 019-2834",
+    location: "San Francisco, CA",
+    website: "https://alexrivera.dev",
+    linkedin: "https://linkedin.com/in/alexrivera",
+    github: "https://github.com/alexrivera",
+  },
+  sections: [
+    {
+      id: "sec-summary",
+      type: "summary",
+      heading: "Professional Summary",
+      visible: true,
+      column: "main",
+      items: [
+        {
+          id: "item-sum-1",
+          visible: true,
+          description:
+            "<p>Versatile Full-Stack Engineer with 6+ years of experience architecting high-performance web applications, distributed microservices, and real-time cloud systems. Proficient in TypeScript, React, Next.js, Node.js, and PostgreSQL.</p>",
+        },
+      ],
+    },
+    {
+      id: "sec-experience",
+      type: "experience",
+      heading: "Work Experience",
+      visible: true,
+      column: "main",
+      items: [
+        {
+          id: "item-exp-1",
+          visible: true,
+          title: "Senior Full-Stack Engineer",
+          subtitle: "Acme Cloud Technologies",
+          location: "San Francisco, CA",
+          startDate: "2022-03",
+          endDate: "Present",
+          description:
+            "<ul><li>Architected micro-frontend architecture reducing bundle sizes by 42% across 3 core applications.</li><li>Engineered streaming API endpoints with Server-Sent Events (SSE) for low-latency live collaboration.</li><li>Mentored a distributed engineering team in modern TypeScript patterns and automated CI/CD testing.</li></ul>",
+        },
+        {
+          id: "item-exp-2",
+          visible: true,
+          title: "Full-Stack Developer",
+          subtitle: "Nexus Digital Labs",
+          location: "New York, NY",
+          startDate: "2019-06",
+          endDate: "2022-02",
+          description:
+            "<ul><li>Built client-facing dashboards and RESTful APIs serving 250,000+ daily active users.</li><li>Optimized database queries and PostgreSQL indexing, cutting p95 response times from 340ms to 45ms.</li></ul>",
+        },
+      ],
+    },
+    {
+      id: "sec-education",
+      type: "education",
+      heading: "Education",
+      visible: true,
+      column: "main",
+      items: [
+        {
+          id: "item-edu-1",
+          visible: true,
+          title: "B.S. in Computer Science",
+          subtitle: "University of California, Berkeley",
+          startDate: "2015",
+          endDate: "2019",
+          description:
+            "<p>Magna Cum Laude. Coursework in Distributed Systems, Algorithms, and Cloud Infrastructure.</p>",
+        },
+      ],
+    },
+    {
+      id: "sec-skills",
+      type: "skills",
+      heading: "Skills & Technologies",
+      visible: true,
+      column: "main",
+      items: [
+        {
+          id: "item-sk-1",
+          visible: true,
+          title: "Languages & Frameworks",
+          tags: ["TypeScript", "JavaScript", "React", "Next.js", "Node.js", "Python", "Tailwind CSS"],
+        },
+        {
+          id: "item-sk-2",
+          visible: true,
+          title: "Cloud & Infrastructure",
+          tags: ["PostgreSQL", "Redis", "Docker", "AWS", "Supabase", "Git", "CI/CD"],
+        },
+      ],
+    },
+    {
+      id: "sec-projects",
+      type: "projects",
+      heading: "Key Projects",
+      visible: true,
+      column: "main",
+      items: [
+        {
+          id: "item-proj-1",
+          visible: true,
+          title: "Real-time Collaborative Canvas",
+          subtitle: "Open Source Project",
+          description:
+            "<p>Built a WebSocket-powered multiplayer canvas supporting 100+ concurrent peers with CRDT state synchronization.</p>",
+        },
+      ],
+    },
+    {
+      id: "sec-languages",
+      type: "languages",
+      heading: "Languages",
+      visible: true,
+      column: "side",
+      items: [
+        {
+          id: "item-lang-1",
+          visible: true,
+          title: "English",
+          subtitle: "Native / Bilingual",
+        },
+        {
+          id: "item-lang-2",
+          visible: true,
+          title: "French",
+          subtitle: "Professional Working Proficiency",
+        },
+      ],
+    },
+  ],
+};
+
+/**
+ * Parses JSON input (either Folio Resume schema, JSON Resume schema, or general backup)
+ * into a validated ParsedResumeDraft for the import review workflow.
+ */
+export function parseJsonResume(input: string | any): { draft: ParsedResumeDraft; title: string } {
+  let data: any = input;
+  if (typeof input === "string") {
+    data = JSON.parse(input);
+  }
+
+  if (!data || typeof data !== "object") {
+    throw new Error("Invalid JSON: input must be a JSON object or array.");
+  }
+
+  // Handle wraps: { resumes: [...] } or array of resumes [...]
+  if (Array.isArray(data)) {
+    data = data[0] || {};
+  } else if (Array.isArray(data.resumes) && data.resumes.length > 0) {
+    data = data.resumes[0];
+  }
+
+  // Check if it's standard JSON Resume format (has `basics`)
+  if (data.basics && typeof data.basics === "object") {
+    const basics = data.basics;
+    const personal: PersonalInfo = {
+      fullName: String(basics.name || "").trim() || "Applicant Name",
+      jobTitle: basics.label ? String(basics.label).trim() : undefined,
+      email: basics.email ? String(basics.email).trim() : undefined,
+      phone: basics.phone ? String(basics.phone).trim() : undefined,
+      website: basics.url ? String(basics.url).trim() : undefined,
+    };
+
+    if (basics.location) {
+      if (typeof basics.location === "object") {
+        personal.location = [
+          basics.location.address,
+          basics.location.city,
+          basics.location.region,
+          basics.location.countryCode,
+        ]
+          .filter(Boolean)
+          .join(", ");
+      } else {
+        personal.location = String(basics.location);
+      }
+    }
+
+    if (Array.isArray(basics.profiles)) {
+      for (const p of basics.profiles) {
+        const net = String(p.network || "").toLowerCase();
+        const url = p.url || (p.username ? `https://${net}.com/${p.username}` : "");
+        if (net.includes("linkedin")) personal.linkedin = url;
+        else if (net.includes("github")) personal.github = url;
+        else if (!personal.website) personal.website = url;
+      }
+    }
+
+    const sections: Section[] = [];
+
+    // Summary from basics
+    if (basics.summary) {
+      sections.push({
+        id: `sec-summary-${Date.now()}`,
+        type: "summary",
+        heading: "Professional Summary",
+        visible: true,
+        column: "main",
+        items: [
+          {
+            id: `item-summary-${Date.now()}`,
+            visible: true,
+            description: `<p>${String(basics.summary).trim()}</p>`,
+          },
+        ],
+      });
+    }
+
+    // Work experience
+    if (Array.isArray(data.work) && data.work.length > 0) {
+      sections.push({
+        id: `sec-exp-${Date.now()}`,
+        type: "experience",
+        heading: "Work Experience",
+        visible: true,
+        column: "main",
+        items: data.work.map((w: any, idx: number) => {
+          let desc = w.summary ? `<p>${w.summary}</p>` : "";
+          if (Array.isArray(w.highlights) && w.highlights.length > 0) {
+            desc += `<ul>${w.highlights.map((h: any) => `<li>${String(h).trim()}</li>`).join("")}</ul>`;
+          }
+          return {
+            id: `item-exp-${Date.now()}-${idx}`,
+            visible: true,
+            title: w.position ? String(w.position).trim() : undefined,
+            subtitle: w.name ? String(w.name).trim() : undefined,
+            location: w.location ? String(w.location).trim() : undefined,
+            startDate: w.startDate ? String(w.startDate).trim() : undefined,
+            endDate: w.endDate ? String(w.endDate).trim() : undefined,
+            description: desc || undefined,
+          };
+        }),
+      });
+    }
+
+    // Education
+    if (Array.isArray(data.education) && data.education.length > 0) {
+      sections.push({
+        id: `sec-edu-${Date.now()}`,
+        type: "education",
+        heading: "Education",
+        visible: true,
+        column: "main",
+        items: data.education.map((e: any, idx: number) => {
+          const title = [e.studyType, e.area].filter(Boolean).join(" in ");
+          return {
+            id: `item-edu-${Date.now()}-${idx}`,
+            visible: true,
+            title: title || undefined,
+            subtitle: e.institution ? String(e.institution).trim() : undefined,
+            startDate: e.startDate ? String(e.startDate).trim() : undefined,
+            endDate: e.endDate ? String(e.endDate).trim() : undefined,
+            description: e.score ? `<p>GPA / Grade: ${e.score}</p>` : undefined,
+          };
+        }),
+      });
+    }
+
+    // Skills
+    if (Array.isArray(data.skills) && data.skills.length > 0) {
+      sections.push({
+        id: `sec-skills-${Date.now()}`,
+        type: "skills",
+        heading: "Skills",
+        visible: true,
+        column: "main",
+        items: data.skills.map((s: any, idx: number) => ({
+          id: `item-sk-${Date.now()}-${idx}`,
+          visible: true,
+          title: s.name ? String(s.name).trim() : "Skills",
+          tags: Array.isArray(s.keywords) ? s.keywords.map(String) : undefined,
+        })),
+      });
+    }
+
+    // Projects
+    if (Array.isArray(data.projects) && data.projects.length > 0) {
+      sections.push({
+        id: `sec-proj-${Date.now()}`,
+        type: "projects",
+        heading: "Projects",
+        visible: true,
+        column: "main",
+        items: data.projects.map((p: any, idx: number) => {
+          let desc = p.description ? `<p>${p.description}</p>` : "";
+          if (Array.isArray(p.highlights) && p.highlights.length > 0) {
+            desc += `<ul>${p.highlights.map((h: any) => `<li>${String(h).trim()}</li>`).join("")}</ul>`;
+          }
+          return {
+            id: `item-proj-${Date.now()}-${idx}`,
+            visible: true,
+            title: p.name ? String(p.name).trim() : undefined,
+            subtitle: p.entity || p.type ? String(p.entity || p.type).trim() : undefined,
+            startDate: p.startDate ? String(p.startDate).trim() : undefined,
+            endDate: p.endDate ? String(p.endDate).trim() : undefined,
+            description: desc || undefined,
+            tags: Array.isArray(p.keywords) ? p.keywords.map(String) : undefined,
+          };
+        }),
+      });
+    }
+
+    // Languages
+    if (Array.isArray(data.languages) && data.languages.length > 0) {
+      sections.push({
+        id: `sec-lang-${Date.now()}`,
+        type: "languages",
+        heading: "Languages",
+        visible: true,
+        column: "side",
+        items: data.languages.map((l: any, idx: number) => ({
+          id: `item-lang-${Date.now()}-${idx}`,
+          visible: true,
+          title: l.language ? String(l.language).trim() : undefined,
+          subtitle: l.fluency ? String(l.fluency).trim() : undefined,
+        })),
+      });
+    }
+
+    // Certifications
+    const certs = data.certificates || data.certifications;
+    if (Array.isArray(certs) && certs.length > 0) {
+      sections.push({
+        id: `sec-cert-${Date.now()}`,
+        type: "certifications",
+        heading: "Certifications",
+        visible: true,
+        column: "side",
+        items: certs.map((c: any, idx: number) => ({
+          id: `item-cert-${Date.now()}-${idx}`,
+          visible: true,
+          title: c.name ? String(c.name).trim() : undefined,
+          subtitle: c.issuer ? String(c.issuer).trim() : undefined,
+          startDate: c.date ? String(c.date).trim() : undefined,
+        })),
+      });
+    }
+
+    const draft = sanitizeAndValidateParsedDraft({ personal, sections });
+    const title =
+      data.title ||
+      (draft.personal.jobTitle
+        ? `${draft.personal.fullName} – ${draft.personal.jobTitle}`
+        : `${draft.personal.fullName} Resume`);
+    return { draft, title };
+  }
+
+  // Folio / Native format: { personal, sections, ... } or { personalInfo, ... }
+  const rawPersonal = data.personal || data.personalInfo || data.profile || data.contact || {};
+  const rawSections = data.sections || [];
+
+  const rawDraft = {
+    personal: rawPersonal,
+    sections: rawSections,
+  };
+
+  const draft = sanitizeAndValidateParsedDraft(rawDraft);
+  const title =
+    data.title ||
+    (draft.personal.jobTitle
+      ? `${draft.personal.fullName} – ${draft.personal.jobTitle}`
+      : `${draft.personal.fullName} Resume`);
+
+  return { draft, title };
+}

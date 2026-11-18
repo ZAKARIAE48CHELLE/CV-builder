@@ -5,6 +5,8 @@ import { extractTextFromFile } from "@/lib/import/extractors";
 import {
   parseTextHeuristically,
   sanitizeAndValidateParsedDraft,
+  parseJsonResume,
+  MOCK_RESUME_JSON_TEMPLATE,
   ParsedResumeDraft,
 } from "@/lib/import/parser";
 import { useFolioStore } from "@/lib/store";
@@ -35,6 +37,11 @@ import {
   FolderGit2,
   Users,
   ListPlus,
+  Code,
+  Copy,
+  Download,
+  Eye,
+  FileCode,
 } from "lucide-react";
 
 interface ImportModalProps {
@@ -65,11 +72,17 @@ export const ImportModal: React.FC<ImportModalProps> = ({
   onImportComplete,
 }) => {
   const { settings, userProfile, createResume, updateResume, importBackupJson } = useFolioStore();
-  const [activeTab, setActiveTab] = useState<"upload" | "paste">("upload");
+  const [activeTab, setActiveTab] = useState<"upload" | "json" | "paste">("upload");
   const [pastedText, setPastedText] = useState("");
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+
+  // Dedicated JSON Import & Template State
+  const [jsonInputText, setJsonInputText] = useState("");
+  const [selectedJsonFile, setSelectedJsonFile] = useState<File | null>(null);
+  const [showJsonTemplate, setShowJsonTemplate] = useState(false);
+  const [copiedTemplate, setCopiedTemplate] = useState(false);
 
   // Review stage
   const [step, setStep] = useState<"input" | "review">("input");
@@ -92,6 +105,76 @@ export const ImportModal: React.FC<ImportModalProps> = ({
     }));
   };
 
+  const handleCopyTemplate = async () => {
+    try {
+      await navigator.clipboard.writeText(JSON.stringify(MOCK_RESUME_JSON_TEMPLATE, null, 2));
+      setCopiedTemplate(true);
+      setTimeout(() => setCopiedTemplate(false), 2000);
+    } catch (e) {
+      console.error("Failed to copy template to clipboard:", e);
+    }
+  };
+
+  const handleDownloadTemplate = () => {
+    const jsonStr = JSON.stringify(MOCK_RESUME_JSON_TEMPLATE, null, 2);
+    const blob = new Blob([jsonStr], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "resume-template.json";
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
+
+  const handleLoadTemplateIntoEditor = () => {
+    setJsonInputText(JSON.stringify(MOCK_RESUME_JSON_TEMPLATE, null, 2));
+    setErrorMsg(null);
+  };
+
+  const handleJsonFileSelected = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setSelectedJsonFile(file);
+    try {
+      const text = await file.text();
+      setJsonInputText(text);
+      setErrorMsg(null);
+    } catch (err: any) {
+      setErrorMsg(err?.message || "Failed to read local JSON file.");
+    }
+  };
+
+  const handleProcessJson = (rawJson: string) => {
+    const trimmed = rawJson.trim();
+    if (!trimmed) {
+      setErrorMsg("Please select a JSON file, load the template, or paste JSON content.");
+      return;
+    }
+
+    setIsLoading(true);
+    setErrorMsg(null);
+
+    try {
+      const { draft, title } = parseJsonResume(trimmed);
+      setParsedDraft(draft);
+      setImportTitle(title);
+
+      const initialExpanded: Record<string, boolean> = {};
+      draft.sections.forEach((s) => {
+        initialExpanded[s.id] = true;
+      });
+      setExpandedSections(initialExpanded);
+      setStep("review");
+    } catch (err: any) {
+      console.error("JSON parse error:", err);
+      setErrorMsg(err.message || "Failed to parse JSON CV. Please check that the JSON is valid.");
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
   const handleProcessText = async (rawText: string, useAi = false) => {
     if (!rawText.trim()) {
       setErrorMsg("Please provide text or upload a document to proceed.");
@@ -101,23 +184,17 @@ export const ImportModal: React.FC<ImportModalProps> = ({
     const trimmed = rawText.trim();
     if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
       try {
-        const parsed = JSON.parse(trimmed);
-        if (parsed && typeof parsed === "object") {
-          setIsLoading(true);
-          const res = await importBackupJson(trimmed);
-          if (res.success) {
-            if (res.firstResumeId) {
-              onImportComplete(res.firstResumeId);
-            } else {
-              onClose();
-            }
-            return;
-          } else {
-            setErrorMsg(res.error || "Failed to import JSON data.");
-            setIsLoading(false);
-            return;
-          }
-        }
+        const { draft, title } = parseJsonResume(trimmed);
+        setParsedDraft(draft);
+        setImportTitle(title);
+
+        const initialExpanded: Record<string, boolean> = {};
+        draft.sections.forEach((s) => {
+          initialExpanded[s.id] = true;
+        });
+        setExpandedSections(initialExpanded);
+        setStep("review");
+        return;
       } catch {
         // Fall back to normal text extraction
       }
@@ -187,19 +264,8 @@ export const ImportModal: React.FC<ImportModalProps> = ({
       setErrorMsg(null);
       try {
         const text = await selectedFile.text();
-        const res = await importBackupJson(text);
-        if (res.success) {
-          if (res.firstResumeId) {
-            onImportComplete(res.firstResumeId);
-          } else {
-            onClose();
-          }
-          return;
-        } else {
-          setErrorMsg(res.error || "Failed to import JSON file.");
-          setIsLoading(false);
-          return;
-        }
+        handleProcessJson(text);
+        return;
       } catch (err: any) {
         setErrorMsg(err?.message || "Failed to parse JSON file.");
         setIsLoading(false);
@@ -352,32 +418,46 @@ export const ImportModal: React.FC<ImportModalProps> = ({
           {step === "input" && (
             <>
               {/* Tab Selector */}
-              <div className="flex rounded-xl bg-neutral-100 dark:bg-neutral-800 p-1">
+              <div className="flex rounded-xl bg-neutral-100 dark:bg-neutral-800 p-1 gap-1">
                 <button
                   type="button"
                   onClick={() => setActiveTab("upload")}
-                  className={`flex-1 py-1.5 text-xs font-semibold rounded-lg transition-all ${
+                  className={`flex-1 py-1.5 px-2 text-xs font-semibold rounded-lg transition-all flex items-center justify-center gap-1.5 ${
                     activeTab === "upload"
                       ? "bg-white dark:bg-neutral-900 text-neutral-900 dark:text-neutral-100 shadow-2xs"
                       : "text-neutral-500 hover:text-neutral-800 dark:hover:text-neutral-200"
                   }`}
                 >
-                  Upload Document (PDF / DOCX / TXT / JSON)
+                  <UploadCloud className="w-3.5 h-3.5" />
+                  <span>Upload Document</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setActiveTab("json")}
+                  className={`flex-1 py-1.5 px-2 text-xs font-semibold rounded-lg transition-all flex items-center justify-center gap-1.5 ${
+                    activeTab === "json"
+                      ? "bg-white dark:bg-neutral-900 text-neutral-900 dark:text-neutral-100 shadow-2xs"
+                      : "text-neutral-500 hover:text-neutral-800 dark:hover:text-neutral-200"
+                  }`}
+                >
+                  <Code className="w-3.5 h-3.5" />
+                  <span>JSON CV / Template</span>
                 </button>
                 <button
                   type="button"
                   onClick={() => setActiveTab("paste")}
-                  className={`flex-1 py-1.5 text-xs font-semibold rounded-lg transition-all ${
+                  className={`flex-1 py-1.5 px-2 text-xs font-semibold rounded-lg transition-all flex items-center justify-center gap-1.5 ${
                     activeTab === "paste"
                       ? "bg-white dark:bg-neutral-900 text-neutral-900 dark:text-neutral-100 shadow-2xs"
                       : "text-neutral-500 hover:text-neutral-800 dark:hover:text-neutral-200"
                   }`}
                 >
-                  Paste Raw Text / JSON
+                  <FileText className="w-3.5 h-3.5" />
+                  <span>Paste Text</span>
                 </button>
               </div>
 
-              {activeTab === "upload" ? (
+              {activeTab === "upload" && (
                 <div className="border-2 border-dashed border-neutral-300 dark:border-neutral-700 rounded-2xl p-8 text-center hover:border-neutral-400 transition-colors bg-neutral-50/50 dark:bg-neutral-950/50">
                   <input
                     type="file"
@@ -394,20 +474,170 @@ export const ImportModal: React.FC<ImportModalProps> = ({
                       <UploadCloud className="w-8 h-8" />
                     </div>
                     <span className="text-sm font-semibold text-neutral-900 dark:text-neutral-100">
-                      {selectedFile ? selectedFile.name : "Click to browse or drop resume or backup file"}
+                      {selectedFile ? selectedFile.name : "Click to browse or drop resume or JSON file"}
                     </span>
                     <span className="text-xs text-neutral-500">
-                      Supports PDF, DOCX, DOC, TXT, and Folio JSON backups up to 10MB
+                      Supports PDF, DOCX, DOC, TXT, and JSON files up to 10MB
                     </span>
                   </label>
                 </div>
-              ) : (
+              )}
+
+              {activeTab === "json" && (
+                <div className="space-y-4">
+                  {/* JSON Template banner / toggle */}
+                  <div className="p-4 rounded-xl border border-blue-100 dark:border-blue-900/50 bg-blue-50/50 dark:bg-blue-950/20 space-y-3">
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                      <div className="flex items-center gap-2">
+                        <FileCode className="w-4 h-4 text-blue-600 dark:text-blue-400 shrink-0" />
+                        <div>
+                          <h4 className="text-xs font-bold text-neutral-900 dark:text-neutral-100">
+                            CV JSON Format & Template
+                          </h4>
+                          <p className="text-[11px] text-neutral-500">
+                            Display mock data, copy template, or download .json file.
+                          </p>
+                        </div>
+                      </div>
+
+                      <div className="flex items-center gap-1.5 shrink-0 flex-wrap">
+                        <button
+                          type="button"
+                          onClick={() => setShowJsonTemplate(!showJsonTemplate)}
+                          className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-semibold rounded-lg border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-900 text-neutral-800 dark:text-neutral-200 hover:bg-neutral-50 dark:hover:bg-neutral-800 shadow-2xs"
+                        >
+                          <Eye className="w-3.5 h-3.5 text-neutral-500" />
+                          {showJsonTemplate ? "Hide Template" : "Display JSON Template"}
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={handleDownloadTemplate}
+                          className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-semibold rounded-lg border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-900 text-neutral-800 dark:text-neutral-200 hover:bg-neutral-50 dark:hover:bg-neutral-800 shadow-2xs"
+                          title="Download Template as .json file"
+                        >
+                          <Download className="w-3.5 h-3.5 text-neutral-500" />
+                          Download .json
+                        </button>
+                      </div>
+                    </div>
+
+                    {showJsonTemplate && (
+                      <div className="mt-2 space-y-2 animate-in fade-in duration-200">
+                        <div className="flex items-center justify-between text-[11px] text-neutral-500">
+                          <span>Mock Resume JSON (Alex Rivera)</span>
+                          <div className="flex items-center gap-2">
+                            <button
+                              type="button"
+                              onClick={handleCopyTemplate}
+                              className="inline-flex items-center gap-1 text-blue-600 dark:text-blue-400 hover:underline font-medium"
+                            >
+                              {copiedTemplate ? (
+                                <>
+                                  <Check className="w-3 h-3 text-emerald-600" />
+                                  <span className="text-emerald-600">Copied!</span>
+                                </>
+                              ) : (
+                                <>
+                                  <Copy className="w-3 h-3" />
+                                  <span>Copy Template</span>
+                                </>
+                              )}
+                            </button>
+                            <span>•</span>
+                            <button
+                              type="button"
+                              onClick={handleLoadTemplateIntoEditor}
+                              className="text-blue-600 dark:text-blue-400 hover:underline font-medium"
+                            >
+                              Load Mock Data
+                            </button>
+                          </div>
+                        </div>
+
+                        <pre className="p-3 rounded-lg bg-neutral-900 text-neutral-100 text-[11px] font-mono overflow-x-auto max-h-56 leading-relaxed border border-neutral-800">
+                          <code>{JSON.stringify(MOCK_RESUME_JSON_TEMPLATE, null, 2)}</code>
+                        </pre>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* File selector for local JSON file */}
+                  <div className="p-4 rounded-xl border border-neutral-200 dark:border-neutral-800 bg-neutral-50/50 dark:bg-neutral-950/50 space-y-2">
+                    <div className="flex items-center justify-between">
+                      <label className="text-xs font-bold text-neutral-800 dark:text-neutral-200 flex items-center gap-1.5">
+                        <UploadCloud className="w-3.5 h-3.5 text-neutral-600 dark:text-neutral-400" />
+                        Choose JSON File from Local
+                      </label>
+                      {selectedJsonFile && (
+                        <span className="text-[11px] text-emerald-600 dark:text-emerald-400 font-medium flex items-center gap-1">
+                          <Check className="w-3 h-3" /> File Loaded
+                        </span>
+                      )}
+                    </div>
+
+                    <div className="flex items-center gap-3">
+                      <input
+                        type="file"
+                        id="json-file-input"
+                        accept=".json,application/json"
+                        onChange={handleJsonFileSelected}
+                        className="hidden"
+                      />
+                      <label
+                        htmlFor="json-file-input"
+                        className="cursor-pointer inline-flex items-center gap-1.5 px-3 py-2 text-xs font-semibold rounded-lg bg-white dark:bg-neutral-900 border border-neutral-300 dark:border-neutral-700 hover:bg-neutral-50 dark:hover:bg-neutral-800 text-neutral-800 dark:text-neutral-200 shadow-2xs"
+                      >
+                        <FolderGit2 className="w-3.5 h-3.5 text-neutral-500" />
+                        Choose JSON File
+                      </label>
+
+                      <span className="text-xs text-neutral-500 truncate flex-1 font-mono">
+                        {selectedJsonFile
+                          ? `${selectedJsonFile.name} (${(selectedJsonFile.size / 1024).toFixed(1)} KB)`
+                          : "No local JSON file selected yet"}
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* Editor / Paste JSON Area */}
+                  <div className="space-y-1.5">
+                    <div className="flex items-center justify-between">
+                      <label className="text-xs font-semibold text-neutral-700 dark:text-neutral-300 flex items-center gap-1">
+                        <Code className="w-3.5 h-3.5 text-neutral-500" />
+                        JSON Content
+                      </label>
+                      {jsonInputText.trim() && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setJsonInputText("");
+                            setSelectedJsonFile(null);
+                          }}
+                          className="text-[11px] text-neutral-400 hover:text-rose-600 dark:hover:text-rose-400"
+                        >
+                          Clear
+                        </button>
+                      )}
+                    </div>
+                    <textarea
+                      rows={8}
+                      value={jsonInputText}
+                      onChange={(e) => setJsonInputText(e.target.value)}
+                      placeholder='Paste JSON CV here, choose a JSON file from your local machine, or click "Display JSON Template" to inspect and load mock data...'
+                      className="w-full text-xs p-3.5 rounded-xl border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-950 text-neutral-900 dark:text-neutral-100 focus:ring-2 focus:ring-neutral-900 font-mono leading-relaxed"
+                    />
+                  </div>
+                </div>
+              )}
+
+              {activeTab === "paste" && (
                 <div>
                   <textarea
                     rows={9}
                     value={pastedText}
                     onChange={(e) => setPastedText(e.target.value)}
-                    placeholder="Paste full resume text here..."
+                    placeholder="Paste full resume text or raw JSON here..."
                     className="w-full text-xs p-3.5 rounded-xl border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-950 text-neutral-900 dark:text-neutral-100 focus:ring-2 focus:ring-neutral-900 font-mono"
                   />
                 </div>
@@ -875,14 +1105,18 @@ export const ImportModal: React.FC<ImportModalProps> = ({
               </button>
 
               <div className="flex items-center gap-2">
-                {hasAiConfigured && (
+                {hasAiConfigured && activeTab !== "json" && (
                   <button
                     type="button"
                     onClick={() => {
                       if (activeTab === "upload") handleStartFileParse(true);
                       else handleProcessText(pastedText, true);
                     }}
-                    disabled={isLoading || (activeTab === "upload" && !selectedFile)}
+                    disabled={
+                      isLoading ||
+                      (activeTab === "upload" && !selectedFile) ||
+                      (activeTab === "paste" && !pastedText.trim())
+                    }
                     className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold rounded-lg border border-neutral-300 dark:border-neutral-700 hover:bg-neutral-100 text-neutral-800 dark:text-neutral-200 disabled:opacity-50"
                   >
                     <Sparkles className="w-3.5 h-3.5 text-amber-500" />
@@ -894,9 +1128,15 @@ export const ImportModal: React.FC<ImportModalProps> = ({
                   type="button"
                   onClick={() => {
                     if (activeTab === "upload") handleStartFileParse(false);
+                    else if (activeTab === "json") handleProcessJson(jsonInputText);
                     else handleProcessText(pastedText, false);
                   }}
-                  disabled={isLoading || (activeTab === "upload" && !selectedFile)}
+                  disabled={
+                    isLoading ||
+                    (activeTab === "upload" && !selectedFile) ||
+                    (activeTab === "json" && !jsonInputText.trim()) ||
+                    (activeTab === "paste" && !pastedText.trim())
+                  }
                   className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-semibold rounded-lg bg-neutral-900 text-white dark:bg-neutral-100 dark:text-neutral-900 hover:opacity-90 disabled:opacity-50"
                 >
                   {isLoading ? (
@@ -906,7 +1146,7 @@ export const ImportModal: React.FC<ImportModalProps> = ({
                     </>
                   ) : (
                     <>
-                      Parse & Review
+                      {activeTab === "json" ? "Import & Parse JSON" : "Parse & Review"}
                       <ArrowRight className="w-3.5 h-3.5" />
                     </>
                   )}
