@@ -43,9 +43,9 @@ export function migrateState(rawState: unknown): PersistedState {
   const currentVersion = state.schemaVersion ?? state.version ?? 0;
 
   let migratedResumes: Resume[] = Array.isArray(state.resumes) ? (state.resumes as Resume[]) : [];
-  let migratedCoverLetters: CoverLetter[] = Array.isArray(state.coverLetters) ? state.coverLetters : [];
-  let migratedJobs: JobApplication[] = Array.isArray(state.jobs) ? state.jobs : [];
-  let migratedSettings: AppSettings = state.settings ?? {
+  const migratedCoverLetters: CoverLetter[] = Array.isArray(state.coverLetters) ? state.coverLetters : [];
+  const migratedJobs: JobApplication[] = Array.isArray(state.jobs) ? state.jobs : [];
+  const migratedSettings: AppSettings = state.settings ?? {
     aiProvider: "gemini",
     aiApiKey: "",
     aiModel: "gemini-2.0-flash",

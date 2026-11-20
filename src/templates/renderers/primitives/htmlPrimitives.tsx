@@ -18,7 +18,7 @@ import {
   ExternalLink,
 } from "lucide-react";
 import { LinkedinIcon, GithubIcon } from "@/components/common/BrandIcons";
-import { getSectionIconComponent } from "@/components/common/SectionIcon";
+import { RenderSectionIcon } from "@/components/common/SectionIcon";
 
 // --------------------------------------------------------------------------
 // 1. HtmlSectionHeading
@@ -57,10 +57,18 @@ export const HtmlSectionHeading: React.FC<HtmlSectionHeadingProps> = ({
       ? "justify-end text-right"
       : "justify-start text-left";
 
-  const SectionIcon =
-    design.icon && iconKey ? getSectionIconComponent(iconKey) : null;
-
   // Heading Styles
+  const iconEl =
+    design.icon && iconKey ? (
+      <RenderSectionIcon
+        iconName={iconKey}
+        style={{
+          width: `${design.fontSize * 0.95}pt`,
+          height: `${design.fontSize * 0.95}pt`,
+        }}
+      />
+    ) : null;
+
   if (design.style === "full-rule") {
     return (
       <div
@@ -86,14 +94,7 @@ export const HtmlSectionHeading: React.FC<HtmlSectionHeadingProps> = ({
             color: resolvedColor,
           }}
         >
-          {SectionIcon && (
-            <SectionIcon
-              style={{
-                width: `${design.fontSize * 0.95}pt`,
-                height: `${design.fontSize * 0.95}pt`,
-              }}
-            />
-          )}
+          {iconEl}
           <span>{heading}</span>
         </h2>
         {design.align !== "right" && (
@@ -128,14 +129,7 @@ export const HtmlSectionHeading: React.FC<HtmlSectionHeadingProps> = ({
             color: resolvedColor,
           }}
         >
-          {SectionIcon && (
-            <SectionIcon
-              style={{
-                width: `${design.fontSize * 0.95}pt`,
-                height: `${design.fontSize * 0.95}pt`,
-              }}
-            />
-          )}
+          {iconEl}
           <span>{heading}</span>
         </h2>
       </div>
@@ -161,14 +155,7 @@ export const HtmlSectionHeading: React.FC<HtmlSectionHeadingProps> = ({
             color: resolvedColor,
           }}
         >
-          {SectionIcon && (
-            <SectionIcon
-              style={{
-                width: `${design.fontSize * 0.95}pt`,
-                height: `${design.fontSize * 0.95}pt`,
-              }}
-            />
-          )}
+          {iconEl}
           <span>{heading}</span>
         </h2>
       </div>
@@ -192,14 +179,7 @@ export const HtmlSectionHeading: React.FC<HtmlSectionHeadingProps> = ({
             letterSpacing: `${design.letterSpacing}em`,
           }}
         >
-          {SectionIcon && (
-            <SectionIcon
-              style={{
-                width: `${design.fontSize * 0.95}pt`,
-                height: `${design.fontSize * 0.95}pt`,
-              }}
-            />
-          )}
+          {iconEl}
           <span>{heading}</span>
         </h2>
       </div>
@@ -229,14 +209,7 @@ export const HtmlSectionHeading: React.FC<HtmlSectionHeadingProps> = ({
           color: resolvedColor,
         }}
       >
-        {SectionIcon && (
-          <SectionIcon
-            style={{
-              width: `${design.fontSize * 0.95}pt`,
-              height: `${design.fontSize * 0.95}pt`,
-            }}
-          />
-        )}
+        {iconEl}
         <span>{heading}</span>
       </h2>
     </div>

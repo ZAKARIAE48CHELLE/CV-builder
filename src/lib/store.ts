@@ -147,7 +147,8 @@ export interface FolioStoreState {
   history: Record<string, ResumeHistory>;
 
   // Lifecycle
-  initStore: () => Promise<void>;
+  initStore: (force?: boolean) => Promise<void>;
+  resetAuthState: () => void;
   saveToStorage: (dirtyResumeId?: string) => Promise<void>;
 
   // Resume CRUD
@@ -258,6 +259,8 @@ function debouncedSave(state: FolioStoreState, dirtyResumeId?: string) {
 }
 
 let networkListenersRegistered = false;
+let authListenerRegistered = false;
+let initStorePromise: Promise<void> | null = null;
 
 async function persistSingleNewResume(
   resume: Resume,
@@ -361,7 +364,35 @@ export const useFolioStore = create<FolioStoreState>((set, get) => ({
     }
   },
 
-  initStore: async () => {
+  resetAuthState: () => {
+    initStorePromise = null;
+    const initial = createInitialState();
+    const byok = loadByokSettings();
+    set({
+      isHydrated: false,
+      userProfile: null,
+      pendingCount: 0,
+      resumes: [],
+      coverLetters: [],
+      jobs: [],
+      customPresets: [],
+      resumeVersions: {},
+      coverLetterVersions: {},
+      conflictState: null,
+      hasLocalDataToImport: false,
+      history: {},
+      settings: { ...initial.settings, ...byok },
+    });
+  },
+
+  initStore: async (force = false) => {
+    if (!force && get().isHydrated) {
+      return;
+    }
+    if (!force && initStorePromise) {
+      return initStorePromise;
+    }
+
     // Register online/offline listeners once in the browser
     if (typeof window !== "undefined" && !networkListenersRegistered) {
       networkListenersRegistered = true;
@@ -373,14 +404,39 @@ export const useFolioStore = create<FolioStoreState>((set, get) => ({
       });
     }
 
-    const byok = loadByokSettings();
+    initStorePromise = (async () => {
+      const byok = loadByokSettings();
 
-    if (isSupabaseConfigured()) {
-      const supabase = getSupabaseBrowserClient();
-      if (supabase) {
-        try {
-          const { data: authData } = await supabase.auth.getUser();
-          if (authData.user) {
+      if (isSupabaseConfigured()) {
+        const supabase = getSupabaseBrowserClient();
+        if (supabase) {
+          if (typeof window !== "undefined" && !authListenerRegistered) {
+            authListenerRegistered = true;
+            supabase.auth.onAuthStateChange((event) => {
+              if (event === "SIGNED_IN") {
+                get().initStore(true).catch(() => {});
+              } else if (event === "SIGNED_OUT") {
+                get().resetAuthState();
+              }
+            });
+          }
+
+          try {
+            const { data: authData } = await supabase.auth.getUser();
+            if (!authData.user) {
+              // Unauthenticated user on /login or /signup: apply BYOK settings without
+              // loading fake local sample resumes or marking cloud data hydrated.
+              set((state) => ({
+                userProfile: null,
+                pendingCount: 0,
+                settings: {
+                  ...state.settings,
+                  ...byok,
+                },
+              }));
+              return;
+            }
+
             await get().refreshUserProfile();
             const profile = get().userProfile;
 
@@ -455,44 +511,48 @@ export const useFolioStore = create<FolioStoreState>((set, get) => ({
               }
               return;
             }
+          } catch (e) {
+            console.warn("Supabase initStore fallback to local:", e);
           }
-        } catch (e) {
-          console.warn("Supabase initStore fallback to local:", e);
         }
       }
-    }
 
-    // Local mode (or unauthenticated public preview)
-    try {
-      const persisted = await storageAdapter.getItem<PersistedState>(STORAGE_KEY);
-      const migrated = migrateState(persisted);
-      const mergedSettings: AppSettings = {
-        ...migrated.settings,
-        ...byok,
-      };
-      const resumeVersions: Record<string, number> = {};
-      for (const r of migrated.resumes) {
-        resumeVersions[r.id] = 1;
+      // Local mode (or offline fallback)
+      try {
+        const persisted = await storageAdapter.getItem<PersistedState>(STORAGE_KEY);
+        const migrated = migrateState(persisted);
+        const mergedSettings: AppSettings = {
+          ...migrated.settings,
+          ...byok,
+        };
+        const resumeVersions: Record<string, number> = {};
+        for (const r of migrated.resumes) {
+          resumeVersions[r.id] = 1;
+        }
+        set({
+          resumes: migrated.resumes,
+          coverLetters: migratedCoverLettersFallback(migrated),
+          jobs: migrated.jobs,
+          customPresets: getCustomPresets(),
+          settings: mergedSettings,
+          resumeVersions,
+          isHydrated: true,
+        });
+      } catch (e) {
+        console.error("Failed to load persisted state, using initial sample:", e);
+        const initial = createInitialState();
+        set({
+          ...initial,
+          customPresets: getCustomPresets(),
+          settings: { ...initial.settings, ...byok },
+          isHydrated: true,
+        });
       }
-      set({
-        resumes: migrated.resumes,
-        coverLetters: migratedCoverLettersFallback(migrated),
-        jobs: migrated.jobs,
-        customPresets: getCustomPresets(),
-        settings: mergedSettings,
-        resumeVersions,
-        isHydrated: true,
-      });
-    } catch (e) {
-      console.error("Failed to load persisted state, using initial sample:", e);
-      const initial = createInitialState();
-      set({
-        ...initial,
-        customPresets: getCustomPresets(),
-        settings: { ...initial.settings, ...byok },
-        isHydrated: true,
-      });
-    }
+    })().finally(() => {
+      initStorePromise = null;
+    });
+
+    return initStorePromise;
   },
 
   saveToStorage: async (dirtyResumeId?: string) => {

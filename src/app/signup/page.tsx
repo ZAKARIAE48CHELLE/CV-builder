@@ -2,7 +2,6 @@
 
 import React, { useState } from "react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
 import { getSupabaseBrowserClient, isSupabaseConfigured } from "@/lib/supabase/client";
 import { APP_NAME } from "@/config";
 import {
@@ -17,7 +16,6 @@ import {
 } from "lucide-react";
 
 export default function SignupPage() {
-  const router = useRouter();
   const [displayName, setDisplayName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -61,8 +59,7 @@ export default function SignupPage() {
       }
 
       if (data.session) {
-        router.push("/");
-        router.refresh();
+        window.location.assign("/");
       } else {
         setSuccessMsg(
           "Account created! Please check your email to confirm your address, then sign in."

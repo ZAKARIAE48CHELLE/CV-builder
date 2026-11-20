@@ -1,7 +1,6 @@
 "use client";
 
 import React, { useEffect, useState } from "react";
-import { useRouter } from "next/navigation";
 import { Navbar } from "@/components/common/Navbar";
 import { useFolioStore } from "@/lib/store";
 import { getSupabaseBrowserClient, isSupabaseConfigured } from "@/lib/supabase/client";
@@ -23,7 +22,6 @@ import {
 } from "lucide-react";
 
 export default function AccountPage() {
-  const router = useRouter();
   const {
     isHydrated,
     initStore,
@@ -283,8 +281,8 @@ export default function AccountPage() {
       if (supabase) {
         await supabase.auth.signOut();
       }
-      router.push("/login");
-      router.refresh();
+      useFolioStore.getState().resetAuthState();
+      window.location.assign("/login");
     } catch (err: any) {
       setDeleteError(err?.message || "Account deletion failed.");
       setDeleting(false);

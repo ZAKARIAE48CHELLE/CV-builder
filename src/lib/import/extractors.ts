@@ -22,7 +22,7 @@ export async function extractTextFromPdf(file: File): Promise<string> {
     // Detect two-column layout by examining X coordinates
     // In standard A4/Letter (width ~595-612pt), a two-column layout has items on the left (<240pt)
     // and items on the right (>240pt) on the same Y horizontal line.
-    let pageLines: string[] = [];
+    const pageLines: string[] = [];
     let currentLine = "";
     let lastY: number | null = null;
     let lastHeight: number = 10;

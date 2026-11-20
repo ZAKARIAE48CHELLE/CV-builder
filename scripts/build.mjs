@@ -12,6 +12,6 @@ if (!isInnerNextBuild) {
   });
 } else {
   console.log("Running next build...");
-  execSync("pnpm exec next build", { stdio: "inherit" });
+  execSync("pnpm run build:next", { stdio: "inherit" });
 }
 

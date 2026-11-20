@@ -70,7 +70,7 @@ export async function proxy(request: NextRequest) {
     .from("profiles")
     .select("status, role")
     .eq("id", user.id)
-    .single();
+    .maybeSingle();
 
   const status = profile?.status || "pending";
   const role = profile?.role || "member";

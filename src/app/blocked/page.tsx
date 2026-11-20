@@ -1,21 +1,19 @@
 "use client";
 
 import React from "react";
-import { useRouter } from "next/navigation";
 import { getSupabaseBrowserClient } from "@/lib/supabase/client";
+import { useFolioStore } from "@/lib/store";
 import { APP_NAME } from "@/config";
 import { ShieldAlert, LogOut } from "lucide-react";
 
 export default function BlockedPage() {
-  const router = useRouter();
-
   const handleSignOut = async () => {
     const supabase = getSupabaseBrowserClient();
     if (supabase) {
       await supabase.auth.signOut();
     }
-    router.push("/login");
-    router.refresh();
+    useFolioStore.getState().resetAuthState();
+    window.location.assign("/login");
   };
 
   return (

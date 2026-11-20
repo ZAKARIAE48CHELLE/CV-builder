@@ -110,3 +110,15 @@ export function getSectionIconComponent(iconName?: string) {
   if (!iconName || iconName === "none") return null;
   return ICON_COMPONENT_MAP[iconName] || null;
 }
+
+export const RenderSectionIcon: React.FC<{
+  iconName?: string;
+  className?: string;
+  style?: React.CSSProperties;
+  fallback?: React.ReactNode;
+}> = ({ iconName, className, style, fallback = null }) => {
+  if (!iconName || iconName === "none") return <>{fallback}</>;
+  const Icon = ICON_COMPONENT_MAP[iconName];
+  if (!Icon) return <>{fallback}</>;
+  return React.createElement(Icon, { className, style });
+};

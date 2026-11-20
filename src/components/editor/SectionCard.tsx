@@ -17,7 +17,7 @@ import {
 } from "lucide-react";
 import {
   AVAILABLE_SECTION_ICONS,
-  getSectionIconComponent,
+  RenderSectionIcon,
 } from "@/components/common/SectionIcon";
 import { useSortable } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
@@ -114,7 +114,6 @@ export const SectionCard: React.FC<SectionCardProps> = ({
   };
 
   const currentIconKey = section.icon !== undefined ? section.icon : meta.iconName;
-  const CurrentIconComponent = getSectionIconComponent(currentIconKey);
 
   return (
     <div
@@ -151,11 +150,11 @@ export const SectionCard: React.FC<SectionCardProps> = ({
                   : `Change section icon (${currentIconKey})`
               }
             >
-              {CurrentIconComponent ? (
-                <CurrentIconComponent className="w-3.5 h-3.5" />
-              ) : (
-                <Slash className="w-3.5 h-3.5 text-neutral-400" />
-              )}
+              <RenderSectionIcon
+                iconName={currentIconKey}
+                className="w-3.5 h-3.5"
+                fallback={<Slash className="w-3.5 h-3.5 text-neutral-400" />}
+              />
             </button>
 
             {isIconPickerOpen && (

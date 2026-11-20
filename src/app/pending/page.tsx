@@ -3,6 +3,7 @@
 import React, { useState } from "react";
 import { useRouter } from "next/navigation";
 import { getSupabaseBrowserClient } from "@/lib/supabase/client";
+import { useFolioStore } from "@/lib/store";
 import { APP_NAME } from "@/config";
 import { Clock, RefreshCw, LogOut, CheckCircle2 } from "lucide-react";
 
@@ -48,8 +49,8 @@ export default function PendingPage() {
     if (supabase) {
       await supabase.auth.signOut();
     }
-    router.push("/login");
-    router.refresh();
+    useFolioStore.getState().resetAuthState();
+    window.location.assign("/login");
   };
 
   return (

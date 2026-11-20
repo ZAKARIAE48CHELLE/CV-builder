@@ -2,7 +2,7 @@
 
 import React from "react";
 import Link from "next/link";
-import { usePathname, useRouter } from "next/navigation";
+import { usePathname } from "next/navigation";
 import { APP_NAME } from "@/config";
 import { useFolioStore } from "@/lib/store";
 import { getSupabaseBrowserClient, isSupabaseConfigured } from "@/lib/supabase/client";
@@ -23,7 +23,6 @@ import { useTheme } from "./ThemeProvider";
 
 export const Navbar: React.FC = () => {
   const pathname = usePathname();
-  const router = useRouter();
   const { isDark, toggleTheme } = useTheme();
   const userProfile = useFolioStore((s) => s.userProfile);
   const pendingCount = useFolioStore((s) => s.pendingCount);
@@ -45,8 +44,8 @@ export const Navbar: React.FC = () => {
     if (supabase) {
       await supabase.auth.signOut();
     }
-    router.push("/login");
-    router.refresh();
+    useFolioStore.getState().resetAuthState();
+    window.location.assign("/login");
   };
 
   return (
@@ -63,7 +62,7 @@ export const Navbar: React.FC = () => {
                 <span className="font-extrabold text-base tracking-tight text-neutral-950 dark:text-neutral-50">
                   {APP_NAME}
                 </span>
-                <span className="text-[10px] font-bold px-1.5 py-0.2 rounded bg-neutral-100 dark:bg-neutral-800 text-neutral-600 dark:text-neutral-400 border border-neutral-200 dark:border-neutral-700">
+                <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-neutral-100 dark:bg-neutral-800 text-neutral-600 dark:text-neutral-400 border border-neutral-200 dark:border-neutral-700">
                   {supabaseEnabled ? "Private Cloud" : "Local-First"}
                 </span>
               </div>
@@ -94,7 +93,7 @@ export const Navbar: React.FC = () => {
                   <Icon className="w-3.5 h-3.5" />
                   {item.label}
                   {item.badge > 0 && (
-                    <span className="ml-0.5 inline-flex items-center justify-center px-1.5 py-0.2 rounded-full text-[10px] font-bold bg-amber-500 text-white">
+                    <span className="ml-0.5 inline-flex items-center justify-center px-1.5 py-0.5 rounded-full text-[10px] font-bold bg-amber-500 text-white">
                       {item.badge}
                     </span>
                   )}
