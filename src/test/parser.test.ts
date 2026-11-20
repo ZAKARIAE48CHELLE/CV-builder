@@ -1,9 +1,14 @@
 import { describe, it, expect } from "vitest";
+import fs from "node:fs";
+import path from "node:path";
 import {
   parseTextHeuristically,
   parseJsonResume,
+  buildResumeFromSingleJson,
   MOCK_RESUME_JSON_TEMPLATE,
 } from "../lib/import/parser";
+import { ResumeSchema } from "../lib/schema";
+import { createInitialState } from "../lib/migrations";
 
 describe("Heuristic Resume Parser", () => {
   it("extracts candidate contact info and sections from raw text", () => {
@@ -204,6 +209,153 @@ Bases de données: PostgreSQL, MongoDB, Pinecone
       expect(title).toBe("Backup CV");
       expect(draft.personal.fullName).toBe("John Doe");
       expect(draft.personal.email).toBe("john@example.com");
+    });
+  });
+
+  describe("buildResumeFromSingleJson", () => {
+    it("preserves full styling & extended fields on an exported Folio single CV JSON", () => {
+      const base = createInitialState().resumes[0];
+      const exportedSingle = {
+        ...base,
+        id: "old-export-id",
+        templateId: "modern",
+        personal: {
+          ...base.personal,
+          photo: "data:image/png;base64,AAA",
+          extraLinks: [{ label: "Portfolio", url: "https://portfolio.dev" }],
+        },
+        headerDesign: { align: "center" as const },
+        sectionDesigns: {
+          "sec-exp": {
+            heading: { style: "bar-left" as const },
+          },
+        },
+        sections: base.sections.map((sec, sIdx) => ({
+          ...sec,
+          icon: sIdx === 0 ? "Sparkles" : undefined,
+          items: sec.items.map((it, iIdx) => ({
+            ...it,
+            link: iIdx === 0 ? "https://example.com/item" : undefined,
+            level: sec.type === "skills" ? 4 : undefined,
+          })),
+        })),
+      };
+
+      const res = buildResumeFromSingleJson(JSON.stringify(exportedSingle), {
+        id: "new-uuid-123",
+      });
+      expect(res.ok).toBe(true);
+      if (!res.ok) return;
+
+      expect(res.resume.id).toBe("new-uuid-123");
+      expect(res.resume.templateId).toBe("modern");
+      expect(res.resume.personal.photo).toBe("data:image/png;base64,AAA");
+      expect(res.resume.personal.extraLinks).toEqual([
+        { label: "Portfolio", url: "https://portfolio.dev" },
+      ]);
+      expect(res.resume.headerDesign?.align).toBe("center");
+      expect(res.resume.sectionDesigns?.["sec-exp"]?.heading?.style).toBe("bar-left");
+      expect(res.resume.sections[0].icon).toBe("Sparkles");
+      expect(res.resume.sections[0].items[0].link).toBe("https://example.com/item");
+      expect(res.resume.sections.find((s) => s.type === "skills")?.items[0].level).toBe(4);
+      expect(() => ResumeSchema.parse(res.resume)).not.toThrow();
+    });
+
+    it("normalizes a real-world resume exported from data/db.json into a valid Resume", () => {
+      const dbPath = path.resolve(process.cwd(), "data/db.json");
+      if (!fs.existsSync(dbPath)) return;
+      const raw = JSON.parse(fs.readFileSync(dbPath, "utf-8"));
+      const singleResume = raw.folio_user_data_v1.resumes[0];
+
+      const res = buildResumeFromSingleJson(singleResume, { id: "real-single-1" });
+      expect(res.ok).toBe(true);
+      if (!res.ok) return;
+
+      expect(res.resume.id).toBe("real-single-1");
+      expect(res.resume.title).toBe(singleResume.title);
+      expect(() => ResumeSchema.parse(res.resume)).not.toThrow();
+    });
+
+    it("builds a complete schema-valid Resume from MOCK_RESUME_JSON_TEMPLATE with options", () => {
+      const res = buildResumeFromSingleJson(MOCK_RESUME_JSON_TEMPLATE, {
+        id: "mock-1",
+        titleOverride: "Tailored Backend CV",
+        templateId: "executive",
+      });
+      expect(res.ok).toBe(true);
+      if (!res.ok) return;
+
+      expect(res.resume.id).toBe("mock-1");
+      expect(res.resume.title).toBe("Tailored Backend CV");
+      expect(res.resume.templateId).toBe("executive");
+      expect(res.resume.createdAt).toBeTruthy();
+      expect(res.resume.updatedAt).toBeTruthy();
+      expect(() => ResumeSchema.parse(res.resume)).not.toThrow();
+    });
+
+    it("builds a complete schema-valid Resume from standard JSON Resume format", () => {
+      const standardJson = {
+        basics: {
+          name: "Ada Lovelace",
+          label: "Principal Mathematician",
+          email: "ada@analyticalengine.org",
+          summary: "Pioneering computing architect.",
+        },
+        work: [
+          {
+            name: "Analytical Engine Lab",
+            position: "Lead Programmer",
+            startDate: "1842",
+            endDate: "1843",
+            highlights: ["Authored first published computer algorithm."],
+          },
+        ],
+        skills: [{ name: "Mathematics", keywords: ["Calculus", "Logic"] }],
+      };
+
+      const res = buildResumeFromSingleJson(standardJson, { id: "std-1" });
+      expect(res.ok).toBe(true);
+      if (!res.ok) return;
+
+      expect(res.resume.personal.fullName).toBe("Ada Lovelace");
+      expect(res.resume.sections.some((s) => s.type === "experience")).toBe(true);
+      expect(() => ResumeSchema.parse(res.resume)).not.toThrow();
+    });
+
+    it("rejects full workspace backups and multi-resume arrays cleanly", () => {
+      const base = createInitialState().resumes[0];
+
+      const fullBackup = {
+        schemaVersion: 2,
+        resumes: [base],
+        coverLetters: [],
+        jobs: [],
+      };
+      const res1 = buildResumeFromSingleJson(fullBackup, { id: "x" });
+      expect(res1.ok).toBe(false);
+      if (!res1.ok) expect(res1.isFullBackup).toBe(true);
+
+      const wrappedDb = {
+        folio_user_data_v1: { schemaVersion: 2, resumes: [base] },
+      };
+      const res2 = buildResumeFromSingleJson(wrappedDb, { id: "x" });
+      expect(res2.ok).toBe(false);
+      if (!res2.ok) expect(res2.isFullBackup).toBe(true);
+
+      const multiArray = [base, { ...base, id: "second" }];
+      const res3 = buildResumeFromSingleJson(multiArray, { id: "x" });
+      expect(res3.ok).toBe(false);
+      if (!res3.ok) expect(res3.isFullBackup).toBe(true);
+    });
+
+    it("rejects malformed JSON and unrecognized JSON shapes without marking as full backup", () => {
+      const badJson = buildResumeFromSingleJson("{not valid json", { id: "x" });
+      expect(badJson.ok).toBe(false);
+      if (!badJson.ok) expect(badJson.isFullBackup).toBeFalsy();
+
+      const unknownShape = buildResumeFromSingleJson({ foo: "bar" }, { id: "x" });
+      expect(unknownShape.ok).toBe(false);
+      if (!unknownShape.ok) expect(unknownShape.isFullBackup).toBeFalsy();
     });
   });
 });

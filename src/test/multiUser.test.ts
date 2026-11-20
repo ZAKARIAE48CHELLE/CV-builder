@@ -11,6 +11,7 @@ import {
 } from "@/lib/ai/quota";
 import { isStoragePath, extractStorageObjectPath, STORAGE_PATH_PREFIX } from "@/lib/storage/userFiles";
 import { createInitialState } from "@/lib/migrations";
+import { MOCK_RESUME_JSON_TEMPLATE } from "@/lib/import/parser";
 import { ResumeSchema } from "@/lib/schema";
 import { useFolioStore } from "@/lib/store";
 import fs from "node:fs";
@@ -266,6 +267,138 @@ describe("Multi-User Security & Data Layer", () => {
       const resEmpty = await store.importBackupJson(JSON.stringify({ someKey: 123 }));
       expect(resEmpty.success).toBe(false);
       expect(resEmpty.error).toContain("No valid resumes");
+    });
+  });
+
+  describe("Single-CV JSON Import & Atomic Draft Creation", () => {
+    it("importSingleResumeJson creates ONLY 1 new resume without mutating coverLetters, jobs, presets, or settings", async () => {
+      const store = useFolioStore.getState();
+      const beforeResumes = useFolioStore.getState().resumes.length;
+      const beforeLetters = [...useFolioStore.getState().coverLetters];
+      const beforeJobs = [...useFolioStore.getState().jobs];
+      const beforePresets = [...useFolioStore.getState().customPresets];
+      const beforeSettings = { ...useFolioStore.getState().settings };
+
+      // 1. Mock JSON template
+      const mockRes = await store.importSingleResumeJson(
+        JSON.stringify(MOCK_RESUME_JSON_TEMPLATE)
+      );
+      expect(mockRes.success).toBe(true);
+      expect(mockRes.resumeId).toBeDefined();
+
+      let state = useFolioStore.getState();
+      expect(state.resumes.length).toBe(beforeResumes + 1);
+      expect(state.coverLetters).toEqual(beforeLetters);
+      expect(state.jobs).toEqual(beforeJobs);
+      expect(state.customPresets).toEqual(beforePresets);
+      expect(state.settings).toEqual(beforeSettings);
+
+      const addedMock = state.resumes.find((r) => r.id === mockRes.resumeId);
+      expect(addedMock).toBeDefined();
+      expect(() => ResumeSchema.parse(addedMock)).not.toThrow();
+
+      // 2. Exported Folio CV JSON
+      const exportedSample = createInitialState().resumes[0];
+      const folioRes = await store.importSingleResumeJson(
+        JSON.stringify({ ...exportedSample, id: "external-id", title: "Exported Folio CV" }),
+        { templateId: "classic" }
+      );
+      expect(folioRes.success).toBe(true);
+      expect(folioRes.resumeId).not.toBe("external-id");
+
+      state = useFolioStore.getState();
+      expect(state.resumes.length).toBe(beforeResumes + 2);
+      const addedFolio = state.resumes.find((r) => r.id === folioRes.resumeId);
+      expect(addedFolio?.templateId).toBe("classic");
+      expect(() => ResumeSchema.parse(addedFolio)).not.toThrow();
+
+      // 3. Standard JSON Resume format
+      const stdRes = await store.importSingleResumeJson(
+        JSON.stringify({
+          basics: {
+            name: "Grace Hopper",
+            label: "Rear Admiral & Compiler Pioneer",
+            email: "grace@navy.mil",
+          },
+          work: [
+            {
+              name: "UNIVAC",
+              position: "Director of Automatic Programming",
+              startDate: "1949",
+              endDate: "1955",
+            },
+          ],
+        })
+      );
+      expect(stdRes.success).toBe(true);
+      state = useFolioStore.getState();
+      expect(state.resumes.length).toBe(beforeResumes + 3);
+      const addedStd = state.resumes.find((r) => r.id === stdRes.resumeId);
+      expect(addedStd?.personal.fullName).toBe("Grace Hopper");
+      expect(() => ResumeSchema.parse(addedStd)).not.toThrow();
+    });
+
+    it("importSingleResumeJson rejects full workspace backups and leaves state untouched", async () => {
+      const store = useFolioStore.getState();
+      const base = createInitialState().resumes[0];
+      const beforeResumesCount = useFolioStore.getState().resumes.length;
+
+      const fullBackupPayload = JSON.stringify({
+        schemaVersion: 2,
+        exportedAt: new Date().toISOString(),
+        resumes: [base],
+        coverLetters: [],
+        jobs: [],
+      });
+
+      const res = await store.importSingleResumeJson(fullBackupPayload);
+      expect(res.success).toBe(false);
+      expect(res.isFullBackup).toBe(true);
+      expect(useFolioStore.getState().resumes.length).toBe(beforeResumesCount);
+    });
+
+    it("createResumeFromDraft atomically creates a schema-valid resume with preserved fields", async () => {
+      const store = useFolioStore.getState();
+      const beforeCount = useFolioStore.getState().resumes.length;
+
+      const res = await store.createResumeFromDraft({
+        title: "Atomic Draft CV",
+        templateId: "sidebar",
+        personal: {
+          fullName: "Alan Turing",
+          jobTitle: "Mathematician",
+          email: "alan@bletchley.uk",
+        },
+        sections: [
+          {
+            id: "sec-exp-1",
+            type: "experience",
+            heading: "Experience",
+            visible: true,
+            column: "main",
+            items: [
+              {
+                id: "item-1",
+                visible: true,
+                title: "Cryptanalyst",
+                subtitle: "Bletchley Park",
+                startDate: "1939",
+                endDate: "1945",
+              },
+            ],
+          },
+        ],
+      });
+
+      expect(res.success).toBe(true);
+      expect(res.resumeId).toBeDefined();
+      const state = useFolioStore.getState();
+      expect(state.resumes.length).toBe(beforeCount + 1);
+      const created = state.resumes.find((r) => r.id === res.resumeId);
+      expect(created?.title).toBe("Atomic Draft CV");
+      expect(created?.templateId).toBe("sidebar");
+      expect(created?.personal.fullName).toBe("Alan Turing");
+      expect(() => ResumeSchema.parse(created)).not.toThrow();
     });
   });
 });

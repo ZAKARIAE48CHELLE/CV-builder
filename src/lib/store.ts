@@ -36,6 +36,7 @@ import { VersionConflictError } from "./data/repository";
 import { ensureUuid } from "./data/supabaseRepository";
 import { getSupabaseBrowserClient, isSupabaseConfigured } from "./supabase/client";
 import { uploadDataUrlPhotoToStorage } from "./storage/userFiles";
+import { buildResumeFromSingleJson } from "./import/parser";
 
 const STORAGE_KEY = "folio_user_data_v1";
 const BYOK_AI_SETTINGS_KEY = "folio_byok_ai_settings_v1";
@@ -205,8 +206,29 @@ export interface FolioStoreState {
   updateSettings: (patch: Partial<AppSettings>) => void;
   exportBackupJson: () => string;
   importBackupJson: (jsonString: string) => Promise<ImportBackupResult>;
+  importSingleResumeJson: (
+    jsonInput: string | unknown,
+    options?: { templateId?: string; titleOverride?: string }
+  ) => Promise<ImportSingleResumeResult>;
+  createResumeFromDraft: (params: {
+    title: string;
+    personal: PersonalInfo;
+    sections: Section[];
+    templateId?: string;
+    design?: GlobalDesign;
+    headerDesign?: Partial<HeaderDesign>;
+    sectionDesigns?: Record<string, Partial<SectionDesign>>;
+  }) => Promise<ImportSingleResumeResult>;
   clearAllData: () => Promise<void>;
   hardSave: () => Promise<boolean>;
+}
+
+export interface ImportSingleResumeResult {
+  success: boolean;
+  resumeId?: string;
+  title?: string;
+  isFullBackup?: boolean;
+  error?: string;
 }
 
 export interface ImportBackupResult {
@@ -236,6 +258,45 @@ function debouncedSave(state: FolioStoreState, dirtyResumeId?: string) {
 }
 
 let networkListenersRegistered = false;
+
+async function persistSingleNewResume(
+  resume: Resume,
+  get: () => FolioStoreState,
+  set: (partial: Partial<FolioStoreState> | ((state: FolioStoreState) => Partial<FolioStoreState>)) => void
+): Promise<ImportSingleResumeResult> {
+  if (isSupabaseConfigured() && get().userProfile?.status === "approved") {
+    try {
+      const created = await getActiveRepository().createResume(resume);
+      set((state) => ({
+        resumes: [created.resume, ...state.resumes],
+        resumeVersions: { ...state.resumeVersions, [created.resume.id]: created.version },
+        saveStatus: "saved",
+      }));
+      return {
+        success: true,
+        resumeId: created.resume.id,
+        title: created.resume.title,
+      };
+    } catch (err: any) {
+      console.error("Failed to save single resume to Supabase:", err);
+      return {
+        success: false,
+        error: err?.message || "Failed to save resume to database.",
+      };
+    }
+  }
+
+  set((state) => ({
+    resumes: [resume, ...state.resumes],
+    resumeVersions: { ...state.resumeVersions, [resume.id]: 1 },
+  }));
+  await get().saveToStorage();
+  return {
+    success: true,
+    resumeId: resume.id,
+    title: resume.title,
+  };
+}
 
 export const useFolioStore = create<FolioStoreState>((set, get) => ({
   isHydrated: false,
@@ -1777,6 +1838,7 @@ export const useFolioStore = create<FolioStoreState>((set, get) => ({
       }
 
       // Remap IDs so importing a backup creates fresh documents without ID collisions
+      const nowIso = new Date().toISOString();
       const idMap = new Map<string, string>();
       const remappedResumes: Resume[] = migrated.resumes.map((r) => {
         const newId = newDocId("res");
@@ -1784,7 +1846,8 @@ export const useFolioStore = create<FolioStoreState>((set, get) => ({
         return {
           ...r,
           id: newId,
-          updatedAt: new Date().toISOString(),
+          createdAt: r.createdAt || nowIso,
+          updatedAt: nowIso,
         };
       });
 
@@ -1813,60 +1876,99 @@ export const useFolioStore = create<FolioStoreState>((set, get) => ({
         const repo = getActiveRepository();
         const newResumeVersions: Record<string, number> = {};
         const newLetterVersions: Record<string, number> = {};
+        const persistedResumes: Resume[] = [];
+        const persistedLetters: CoverLetter[] = [];
+        const persistedJobs: JobApplication[] = [];
+        const persistedPresets: StylePreset[] = [];
+        let firstError: string | undefined;
 
-        // Persist all to Supabase in parallel
+        // Persist all to Supabase in parallel and track actual persisted records
         await Promise.all([
           ...remappedResumes.map(async (r) => {
             try {
               const res = await repo.createResume(r);
-              newResumeVersions[r.id] = res.version;
-            } catch (err) {
+              newResumeVersions[res.resume.id] = res.version;
+              persistedResumes.push(res.resume);
+            } catch (err: any) {
               console.error("Failed to save imported resume to Supabase:", r.title, err);
+              if (!firstError) firstError = err?.message || "Failed to save resume to Supabase.";
             }
           }),
           ...remappedLetters.map(async (cl) => {
             try {
               const res = await repo.createCoverLetter(cl);
               newLetterVersions[cl.id] = res.version;
-            } catch (err) {
+              persistedLetters.push(cl);
+            } catch (err: any) {
               console.error("Failed to save imported letter to Supabase:", cl.title, err);
+              if (!firstError) firstError = err?.message || "Failed to save cover letter to Supabase.";
             }
           }),
           ...remappedJobs.map(async (j, idx) => {
             try {
               await repo.createJob(j, idx);
-            } catch (err) {
+              persistedJobs.push(j);
+            } catch (err: any) {
               console.error("Failed to save imported job to Supabase:", j.company, err);
+              if (!firstError) firstError = err?.message || "Failed to save job application to Supabase.";
             }
           }),
           ...remappedPresets.map(async (p) => {
             try {
               await repo.savePreset(p);
-            } catch (err) {
+              persistedPresets.push(p);
+            } catch (err: any) {
               console.error("Failed to save imported preset to Supabase:", p.name, err);
+              if (!firstError) firstError = err?.message || "Failed to save preset to Supabase.";
             }
           }),
         ]);
 
+        const totalPersisted =
+          persistedResumes.length +
+          persistedLetters.length +
+          persistedJobs.length +
+          persistedPresets.length;
+
+        if (totalPersisted === 0) {
+          return {
+            success: false,
+            resumesCount: 0,
+            coverLettersCount: 0,
+            jobsCount: 0,
+            presetsCount: 0,
+            error: firstError || "Failed to save imported backup to database.",
+          };
+        }
+
         set((state) => ({
-          resumes: [...remappedResumes, ...state.resumes],
-          coverLetters: [...remappedLetters, ...state.coverLetters],
-          jobs: [...remappedJobs, ...state.jobs],
-          customPresets: [...remappedPresets, ...state.customPresets],
+          resumes: [...persistedResumes, ...state.resumes],
+          coverLetters: [...persistedLetters, ...state.coverLetters],
+          jobs: [...persistedJobs, ...state.jobs],
+          customPresets: [...persistedPresets, ...state.customPresets],
           resumeVersions: { ...state.resumeVersions, ...newResumeVersions },
           coverLetterVersions: { ...state.coverLetterVersions, ...newLetterVersions },
           saveStatus: "saved",
         }));
-      } else {
-        set((state) => ({
-          resumes: [...remappedResumes, ...state.resumes],
-          coverLetters: [...remappedLetters, ...state.coverLetters],
-          jobs: [...remappedJobs, ...state.jobs],
-          customPresets: [...remappedPresets, ...state.customPresets],
-          settings: { ...migrated.settings, ...state.settings, ...loadByokSettings() },
-        }));
-        await get().saveToStorage();
+
+        return {
+          success: true,
+          resumesCount: persistedResumes.length,
+          coverLettersCount: persistedLetters.length,
+          jobsCount: persistedJobs.length,
+          presetsCount: persistedPresets.length,
+          firstResumeId: persistedResumes[0]?.id,
+        };
       }
+
+      set((state) => ({
+        resumes: [...remappedResumes, ...state.resumes],
+        coverLetters: [...remappedLetters, ...state.coverLetters],
+        jobs: [...remappedJobs, ...state.jobs],
+        customPresets: [...remappedPresets, ...state.customPresets],
+        settings: { ...migrated.settings, ...state.settings, ...loadByokSettings() },
+      }));
+      await get().saveToStorage();
 
       return {
         success: true,
@@ -1885,6 +1987,62 @@ export const useFolioStore = create<FolioStoreState>((set, get) => ({
         jobsCount: 0,
         presetsCount: 0,
         error: e?.message || "Failed to import backup.",
+      };
+    }
+  },
+
+  importSingleResumeJson: async (
+    jsonInput: string | unknown,
+    options?: { templateId?: string; titleOverride?: string }
+  ): Promise<ImportSingleResumeResult> => {
+    try {
+      const id = newDocId("res");
+      const built = buildResumeFromSingleJson(jsonInput, {
+        id,
+        templateId: options?.templateId,
+        titleOverride: options?.titleOverride,
+      });
+
+      if (!built.ok) {
+        return {
+          success: false,
+          error: built.error,
+          isFullBackup: built.isFullBackup,
+        };
+      }
+
+      return await persistSingleNewResume(built.resume, get, set);
+    } catch (err: any) {
+      console.error("Single resume JSON import failed:", err);
+      return {
+        success: false,
+        error: err?.message || "Failed to import CV from JSON.",
+      };
+    }
+  },
+
+  createResumeFromDraft: async (params): Promise<ImportSingleResumeResult> => {
+    try {
+      const id = newDocId("res");
+      const now = new Date().toISOString();
+      const resume: Resume = {
+        id,
+        title: params.title.trim() || "Imported Resume",
+        createdAt: now,
+        updatedAt: now,
+        templateId: params.templateId?.trim() || "plain",
+        design: params.design || { ...DEFAULT_GLOBAL_DESIGN },
+        headerDesign: params.headerDesign || {},
+        sectionDesigns: params.sectionDesigns || {},
+        personal: params.personal,
+        sections: params.sections,
+      };
+      return await persistSingleNewResume(resume, get, set);
+    } catch (err: any) {
+      console.error("Create resume from draft failed:", err);
+      return {
+        success: false,
+        error: err?.message || "Failed to create resume.",
       };
     }
   },

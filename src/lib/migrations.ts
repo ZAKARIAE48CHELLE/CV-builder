@@ -1,5 +1,5 @@
 import { SCHEMA_VERSION, DEFAULT_DESIGN } from "../config";
-import { Resume, CoverLetter, AppSettings, JobApplication } from "./schema";
+import { Resume, CoverLetter, AppSettings, JobApplication, SectionType, SectionTypeSchema } from "./schema";
 import { DEFAULT_GLOBAL_DESIGN, DEFAULT_SECTION_DESIGN } from "./design/defaults";
 
 export interface PersistedState {
@@ -115,12 +115,97 @@ export function migrateState(rawState: unknown): PersistedState {
     });
   }
 
+  // Always normalize every resume so partial/re-imported objects satisfy ResumeSchema required fields
+  const nowIso = new Date().toISOString();
+  migratedResumes = migratedResumes.map((r, idx) => normalizeMigratedResume(r, idx, nowIso));
+
   return {
     schemaVersion: SCHEMA_VERSION,
     resumes: migratedResumes,
     coverLetters: migratedCoverLetters,
     jobs: migratedJobs,
     settings: migratedSettings,
+  };
+}
+
+function normalizeMigratedResume(raw: Resume, idx: number, nowIso: string): Resume {
+  const existingDesign = ((raw as any)?.design || {}) as Record<string, any>;
+  const existingDefaults = (existingDesign.sectionDefaults || {}) as Record<string, any>;
+
+  const mergedSectionDefaults = {
+    heading: { ...DEFAULT_SECTION_DESIGN.heading, ...(existingDefaults.heading || {}) },
+    arrangement: { ...DEFAULT_SECTION_DESIGN.arrangement, ...(existingDefaults.arrangement || {}) },
+    entry: { ...DEFAULT_SECTION_DESIGN.entry, ...(existingDefaults.entry || {}) },
+    description: { ...DEFAULT_SECTION_DESIGN.description, ...(existingDefaults.description || {}) },
+    level: { ...DEFAULT_SECTION_DESIGN.level, ...(existingDefaults.level || {}) },
+    spacing: { ...DEFAULT_SECTION_DESIGN.spacing, ...(existingDefaults.spacing || {}) },
+    typography: { ...DEFAULT_SECTION_DESIGN.typography, ...(existingDefaults.typography || {}) },
+    container: { ...DEFAULT_SECTION_DESIGN.container, ...(existingDefaults.container || {}) },
+    placement: { ...DEFAULT_SECTION_DESIGN.placement, ...(existingDefaults.placement || {}) },
+    dates: { ...DEFAULT_SECTION_DESIGN.dates, ...(existingDefaults.dates || {}) },
+  };
+
+  const mergedDesign = {
+    ...DEFAULT_GLOBAL_DESIGN,
+    ...existingDesign,
+    marginsMm: {
+      ...DEFAULT_GLOBAL_DESIGN.marginsMm,
+      ...(existingDesign.marginsMm || {}),
+    },
+    sectionDefaults: mergedSectionDefaults,
+  };
+
+  const fullName = raw?.personal?.fullName || "Your Name";
+  const rawTitle = typeof raw?.title === "string" ? raw.title.trim() : "";
+  const title = rawTitle || (raw?.personal?.fullName ? `${raw.personal.fullName} Resume` : "Imported Resume");
+
+  const sections = Array.isArray(raw?.sections)
+    ? raw.sections.map((s, sIdx) => {
+        const parsedType = SectionTypeSchema.safeParse(
+          typeof s?.type === "string" ? s.type.toLowerCase() : "custom"
+        );
+        const type: SectionType = parsedType.success ? parsedType.data : "custom";
+        const heading =
+          typeof s?.heading === "string" && s.heading.trim()
+            ? s.heading.trim()
+            : type.charAt(0).toUpperCase() + type.slice(1);
+
+        return {
+          ...s,
+          id: typeof s?.id === "string" && s.id ? s.id : `sec-${Date.now()}-${idx}-${sIdx}`,
+          type,
+          heading,
+          visible: s?.visible !== false,
+          column: (s?.column === "side" ? "side" : "main") as "main" | "side",
+          items: Array.isArray(s?.items)
+            ? s.items.map((item, itemIdx) => ({
+                ...item,
+                id:
+                  typeof item?.id === "string" && item.id
+                    ? item.id
+                    : `item-${Date.now()}-${idx}-${sIdx}-${itemIdx}`,
+                visible: item?.visible !== false,
+              }))
+            : [],
+        };
+      })
+    : [];
+
+  return {
+    ...raw,
+    id: typeof raw?.id === "string" && raw.id ? raw.id : `res-${Date.now()}-${idx}`,
+    title,
+    createdAt: typeof raw?.createdAt === "string" && raw.createdAt ? raw.createdAt : nowIso,
+    updatedAt: typeof raw?.updatedAt === "string" && raw.updatedAt ? raw.updatedAt : nowIso,
+    templateId: typeof raw?.templateId === "string" && raw.templateId.trim() ? raw.templateId.trim() : "plain",
+    design: mergedDesign,
+    headerDesign: raw?.headerDesign || {},
+    sectionDesigns: raw?.sectionDesigns || {},
+    personal: {
+      ...(raw?.personal || {}),
+      fullName,
+    },
+    sections,
   };
 }
 

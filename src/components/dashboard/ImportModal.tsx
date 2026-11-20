@@ -6,13 +6,21 @@ import {
   parseTextHeuristically,
   sanitizeAndValidateParsedDraft,
   parseJsonResume,
+  buildResumeFromSingleJson,
   MOCK_RESUME_JSON_TEMPLATE,
   ParsedResumeDraft,
 } from "@/lib/import/parser";
 import { useFolioStore } from "@/lib/store";
 import { callAiApi } from "@/lib/ai/provider";
 import { uploadImportedFile } from "@/lib/storage/userFiles";
-import { SectionType, SECTION_META, SectionItem } from "@/lib/schema";
+import {
+  SectionType,
+  SECTION_META,
+  SectionItem,
+  GlobalDesign,
+  HeaderDesign,
+  SectionDesign,
+} from "@/lib/schema";
 import {
   UploadCloud,
   FileText,
@@ -71,7 +79,12 @@ export const ImportModal: React.FC<ImportModalProps> = ({
   onClose,
   onImportComplete,
 }) => {
-  const { settings, userProfile, createResume, updateResume, importBackupJson } = useFolioStore();
+  const {
+    settings,
+    userProfile,
+    importSingleResumeJson,
+    createResumeFromDraft,
+  } = useFolioStore();
   const [activeTab, setActiveTab] = useState<"upload" | "json" | "paste">("upload");
   const [pastedText, setPastedText] = useState("");
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
@@ -89,6 +102,12 @@ export const ImportModal: React.FC<ImportModalProps> = ({
   const [parsedDraft, setParsedDraft] = useState<ParsedResumeDraft | null>(null);
   const [importTitle, setImportTitle] = useState("Imported Resume");
   const [expandedSections, setExpandedSections] = useState<Record<string, boolean>>({});
+  const [importedMeta, setImportedMeta] = useState<{
+    templateId?: string;
+    design?: GlobalDesign;
+    headerDesign?: Partial<HeaderDesign>;
+    sectionDesigns?: Record<string, Partial<SectionDesign>>;
+  } | null>(null);
 
   if (!isOpen) return null;
 
@@ -146,6 +165,73 @@ export const ImportModal: React.FC<ImportModalProps> = ({
     }
   };
 
+  const handleQuickCreateFromJson = async () => {
+    const trimmed = jsonInputText.trim();
+    if (!trimmed) {
+      setErrorMsg("Please select a JSON file, load the template, or paste JSON content.");
+      return;
+    }
+
+    setIsLoading(true);
+    setErrorMsg(null);
+    try {
+      const res = await importSingleResumeJson(trimmed);
+      if (res.success && res.resumeId) {
+        onImportComplete(res.resumeId);
+        onClose();
+      } else {
+        setErrorMsg(res.error || "Failed to create CV from JSON.");
+      }
+    } catch (err: any) {
+      setErrorMsg(err?.message || "Failed to create CV from JSON.");
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const enterReviewFromJson = (rawJson: string): boolean => {
+    const built = buildResumeFromSingleJson(rawJson, { id: "preview" });
+    if (built.ok) {
+      const draft: ParsedResumeDraft = {
+        personal: built.resume.personal,
+        sections: built.resume.sections,
+      };
+      setParsedDraft(draft);
+      setImportTitle(built.resume.title);
+      setImportedMeta({
+        templateId: built.resume.templateId,
+        design: built.resume.design,
+        headerDesign: built.resume.headerDesign,
+        sectionDesigns: built.resume.sectionDesigns,
+      });
+      const initialExpanded: Record<string, boolean> = {};
+      draft.sections.forEach((s) => {
+        initialExpanded[s.id] = true;
+      });
+      setExpandedSections(initialExpanded);
+      setStep("review");
+      return true;
+    }
+
+    if (built.isFullBackup) {
+      setErrorMsg(built.error);
+      return false;
+    }
+
+    // Fallback to parseJsonResume for lenient draft inputs
+    const { draft, title } = parseJsonResume(rawJson);
+    setParsedDraft(draft);
+    setImportTitle(title);
+    setImportedMeta(null);
+    const initialExpanded: Record<string, boolean> = {};
+    draft.sections.forEach((s) => {
+      initialExpanded[s.id] = true;
+    });
+    setExpandedSections(initialExpanded);
+    setStep("review");
+    return true;
+  };
+
   const handleProcessJson = (rawJson: string) => {
     const trimmed = rawJson.trim();
     if (!trimmed) {
@@ -157,16 +243,7 @@ export const ImportModal: React.FC<ImportModalProps> = ({
     setErrorMsg(null);
 
     try {
-      const { draft, title } = parseJsonResume(trimmed);
-      setParsedDraft(draft);
-      setImportTitle(title);
-
-      const initialExpanded: Record<string, boolean> = {};
-      draft.sections.forEach((s) => {
-        initialExpanded[s.id] = true;
-      });
-      setExpandedSections(initialExpanded);
-      setStep("review");
+      enterReviewFromJson(trimmed);
     } catch (err: any) {
       console.error("JSON parse error:", err);
       setErrorMsg(err.message || "Failed to parse JSON CV. Please check that the JSON is valid.");
@@ -184,17 +261,15 @@ export const ImportModal: React.FC<ImportModalProps> = ({
     const trimmed = rawText.trim();
     if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
       try {
-        const { draft, title } = parseJsonResume(trimmed);
-        setParsedDraft(draft);
-        setImportTitle(title);
-
-        const initialExpanded: Record<string, boolean> = {};
-        draft.sections.forEach((s) => {
-          initialExpanded[s.id] = true;
-        });
-        setExpandedSections(initialExpanded);
-        setStep("review");
-        return;
+        const built = buildResumeFromSingleJson(trimmed, { id: "preview" });
+        if (!built.ok && built.isFullBackup) {
+          setErrorMsg(built.error);
+          return;
+        }
+        if (built.ok) {
+          enterReviewFromJson(trimmed);
+          return;
+        }
       } catch {
         // Fall back to normal text extraction
       }
@@ -202,6 +277,7 @@ export const ImportModal: React.FC<ImportModalProps> = ({
 
     setIsLoading(true);
     setErrorMsg(null);
+    setImportedMeta(null);
 
     try {
       let draft: ParsedResumeDraft;
@@ -360,25 +436,35 @@ export const ImportModal: React.FC<ImportModalProps> = ({
     setParsedDraft({ ...parsedDraft, sections: nextSections });
   };
 
-  const handleFinalizeImport = () => {
-    if (!parsedDraft) return;
+  const handleFinalizeImport = async () => {
+    if (!parsedDraft || isLoading) return;
 
-    // Sanitize before committing to store
-    const cleaned = sanitizeAndValidateParsedDraft(parsedDraft);
+    setIsLoading(true);
+    setErrorMsg(null);
+    try {
+      // Sanitize before committing atomically to store
+      const cleaned = sanitizeAndValidateParsedDraft(parsedDraft);
+      const res = await createResumeFromDraft({
+        title: importTitle.trim() || "Imported Resume",
+        personal: cleaned.personal,
+        sections: cleaned.sections,
+        templateId: importedMeta?.templateId,
+        design: importedMeta?.design,
+        headerDesign: importedMeta?.headerDesign,
+        sectionDesigns: importedMeta?.sectionDesigns,
+      });
 
-    // Create the resume in store with parsed info
-    const newId = createResume(importTitle.trim() || "Imported Resume", "plain");
-
-    updateResume(newId, (draft) => {
-      draft.personal = { ...draft.personal, ...cleaned.personal };
-      if (cleaned.sections.length > 0) {
-        draft.sections = cleaned.sections;
+      if (res.success && res.resumeId) {
+        onImportComplete(res.resumeId);
+        onClose();
+      } else {
+        setErrorMsg(res.error || "Failed to save resume.");
       }
-      return draft;
-    });
-
-    onImportComplete(newId);
-    onClose();
+    } catch (err: any) {
+      setErrorMsg(err?.message || "Failed to save resume.");
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   return (
@@ -1105,52 +1191,85 @@ export const ImportModal: React.FC<ImportModalProps> = ({
               </button>
 
               <div className="flex items-center gap-2">
-                {hasAiConfigured && activeTab !== "json" && (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      if (activeTab === "upload") handleStartFileParse(true);
-                      else handleProcessText(pastedText, true);
-                    }}
-                    disabled={
-                      isLoading ||
-                      (activeTab === "upload" && !selectedFile) ||
-                      (activeTab === "paste" && !pastedText.trim())
-                    }
-                    className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold rounded-lg border border-neutral-300 dark:border-neutral-700 hover:bg-neutral-100 text-neutral-800 dark:text-neutral-200 disabled:opacity-50"
-                  >
-                    <Sparkles className="w-3.5 h-3.5 text-amber-500" />
-                    Parse with AI
-                  </button>
-                )}
+                {activeTab === "json" ? (
+                  <>
+                    <button
+                      type="button"
+                      onClick={() => handleProcessJson(jsonInputText)}
+                      disabled={isLoading || !jsonInputText.trim()}
+                      className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold rounded-lg border border-neutral-300 dark:border-neutral-700 hover:bg-neutral-100 dark:hover:bg-neutral-800 text-neutral-800 dark:text-neutral-200 disabled:opacity-50"
+                    >
+                      <Eye className="w-3.5 h-3.5" />
+                      Review Fields
+                    </button>
 
-                <button
-                  type="button"
-                  onClick={() => {
-                    if (activeTab === "upload") handleStartFileParse(false);
-                    else if (activeTab === "json") handleProcessJson(jsonInputText);
-                    else handleProcessText(pastedText, false);
-                  }}
-                  disabled={
-                    isLoading ||
-                    (activeTab === "upload" && !selectedFile) ||
-                    (activeTab === "json" && !jsonInputText.trim()) ||
-                    (activeTab === "paste" && !pastedText.trim())
-                  }
-                  className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-semibold rounded-lg bg-neutral-900 text-white dark:bg-neutral-100 dark:text-neutral-900 hover:opacity-90 disabled:opacity-50"
-                >
-                  {isLoading ? (
-                    <>
-                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                      Parsing...
-                    </>
-                  ) : (
-                    <>
-                      {activeTab === "json" ? "Import & Parse JSON" : "Parse & Review"}
-                      <ArrowRight className="w-3.5 h-3.5" />
-                    </>
-                  )}
-                </button>
+                    <button
+                      type="button"
+                      onClick={handleQuickCreateFromJson}
+                      disabled={isLoading || !jsonInputText.trim()}
+                      className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-semibold rounded-lg bg-neutral-900 text-white dark:bg-neutral-100 dark:text-neutral-900 hover:opacity-90 disabled:opacity-50"
+                    >
+                      {isLoading ? (
+                        <>
+                          <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                          Creating...
+                        </>
+                      ) : (
+                        <>
+                          Create CV Directly
+                          <ArrowRight className="w-3.5 h-3.5" />
+                        </>
+                      )}
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    {hasAiConfigured && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (activeTab === "upload") handleStartFileParse(true);
+                          else handleProcessText(pastedText, true);
+                        }}
+                        disabled={
+                          isLoading ||
+                          (activeTab === "upload" && !selectedFile) ||
+                          (activeTab === "paste" && !pastedText.trim())
+                        }
+                        className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold rounded-lg border border-neutral-300 dark:border-neutral-700 hover:bg-neutral-100 text-neutral-800 dark:text-neutral-200 disabled:opacity-50"
+                      >
+                        <Sparkles className="w-3.5 h-3.5 text-amber-500" />
+                        Parse with AI
+                      </button>
+                    )}
+
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (activeTab === "upload") handleStartFileParse(false);
+                        else handleProcessText(pastedText, false);
+                      }}
+                      disabled={
+                        isLoading ||
+                        (activeTab === "upload" && !selectedFile) ||
+                        (activeTab === "paste" && !pastedText.trim())
+                      }
+                      className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-semibold rounded-lg bg-neutral-900 text-white dark:bg-neutral-100 dark:text-neutral-900 hover:opacity-90 disabled:opacity-50"
+                    >
+                      {isLoading ? (
+                        <>
+                          <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                          Parsing...
+                        </>
+                      ) : (
+                        <>
+                          Parse & Review
+                          <ArrowRight className="w-3.5 h-3.5" />
+                        </>
+                      )}
+                    </button>
+                  </>
+                )}
               </div>
             </>
           ) : (
@@ -1158,7 +1277,8 @@ export const ImportModal: React.FC<ImportModalProps> = ({
               <button
                 type="button"
                 onClick={() => setStep("input")}
-                className="px-4 py-2 text-xs font-semibold rounded-lg border border-neutral-300 dark:border-neutral-700 hover:bg-neutral-100 dark:hover:bg-neutral-800"
+                disabled={isLoading}
+                className="px-4 py-2 text-xs font-semibold rounded-lg border border-neutral-300 dark:border-neutral-700 hover:bg-neutral-100 dark:hover:bg-neutral-800 disabled:opacity-50"
               >
                 Back to Input
               </button>
@@ -1166,10 +1286,20 @@ export const ImportModal: React.FC<ImportModalProps> = ({
               <button
                 type="button"
                 onClick={handleFinalizeImport}
-                className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-semibold rounded-lg bg-emerald-600 text-white hover:bg-emerald-700 shadow-xs"
+                disabled={isLoading}
+                className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-semibold rounded-lg bg-emerald-600 text-white hover:bg-emerald-700 shadow-xs disabled:opacity-50"
               >
-                <Check className="w-4 h-4" />
-                Confirm & Create Resume
+                {isLoading ? (
+                  <>
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                    Creating...
+                  </>
+                ) : (
+                  <>
+                    <Check className="w-4 h-4" />
+                    Confirm & Create Resume
+                  </>
+                )}
               </button>
             </>
           )}

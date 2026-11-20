@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useEffect, useState } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useFolioStore } from "@/lib/store";
 import { Navbar } from "@/components/common/Navbar";
@@ -15,11 +16,13 @@ import {
   Plus,
   UploadCloud,
   FileText,
+  FileJson,
   Mail,
   Download,
   Loader2,
-  Sparkles,
   Layers,
+  AlertCircle,
+  X,
 } from "lucide-react";
 
 export default function DashboardPage() {
@@ -37,12 +40,17 @@ export default function DashboardPage() {
     duplicateCoverLetter,
     deleteCoverLetter,
     exportBackupJson,
-    importBackupJson,
+    importSingleResumeJson,
   } = useFolioStore();
 
   const [activeTab, setActiveTab] = useState<"resumes" | "letters">("resumes");
   const [isNewResumeOpen, setIsNewResumeOpen] = useState(false);
   const [isImportOpen, setIsImportOpen] = useState(false);
+  const [isImportingJson, setIsImportingJson] = useState(false);
+  const [jsonImportError, setJsonImportError] = useState<{
+    message: string;
+    isFullBackup?: boolean;
+  } | null>(null);
 
   useEffect(() => {
     if (!isHydrated) {
@@ -61,31 +69,30 @@ export default function DashboardPage() {
     URL.revokeObjectURL(url);
   };
 
-  const handleImportJsonFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleSingleJsonUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
+
+    setJsonImportError(null);
+    setIsImportingJson(true);
+
     try {
       const text = await file.text();
-      const res = await importBackupJson(text);
-      if (res.success) {
-        const parts: string[] = [];
-        if (res.resumesCount > 0)
-          parts.push(`${res.resumesCount} resume${res.resumesCount > 1 ? "s" : ""}`);
-        if (res.coverLettersCount > 0)
-          parts.push(
-            `${res.coverLettersCount} cover letter${res.coverLettersCount > 1 ? "s" : ""}`
-          );
-        if (res.jobsCount > 0)
-          parts.push(`${res.jobsCount} job application${res.jobsCount > 1 ? "s" : ""}`);
-        if (res.presetsCount > 0)
-          parts.push(`${res.presetsCount} style preset${res.presetsCount > 1 ? "s" : ""}`);
-        alert(`Successfully imported: ${parts.join(", ")}!`);
+      const res = await importSingleResumeJson(text);
+      if (res.success && res.resumeId) {
+        router.push(`/resume/${res.resumeId}`);
       } else {
-        alert(`Failed to import JSON: ${res.error || "Unknown error"}`);
+        setJsonImportError({
+          message: res.error || "Failed to import CV JSON.",
+          isFullBackup: res.isFullBackup,
+        });
       }
     } catch (err: any) {
-      alert(`Error reading JSON file: ${err?.message || "Invalid file"}`);
+      setJsonImportError({
+        message: err?.message || "Invalid JSON file.",
+      });
     } finally {
+      setIsImportingJson(false);
       e.target.value = "";
     }
   };
@@ -152,16 +159,23 @@ export default function DashboardPage() {
             </button>
 
             <label
-              title="Import a JSON backup or exported resume"
-              className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl border border-neutral-300 dark:border-neutral-700 hover:bg-neutral-100 dark:hover:bg-neutral-800 text-xs font-semibold text-neutral-800 dark:text-neutral-200 shadow-2xs transition-all cursor-pointer"
+              title="Upload a single CV JSON file to automatically create a new resume"
+              className={`inline-flex items-center gap-1.5 px-3 py-2 rounded-xl border border-neutral-300 dark:border-neutral-700 hover:bg-neutral-100 dark:hover:bg-neutral-800 text-xs font-semibold text-neutral-800 dark:text-neutral-200 shadow-2xs transition-all ${
+                isImportingJson ? "opacity-60 pointer-events-none" : "cursor-pointer"
+              }`}
             >
-              <UploadCloud className="w-4 h-4 text-blue-600 dark:text-blue-400" />
-              Import JSON
+              {isImportingJson ? (
+                <Loader2 className="w-4 h-4 animate-spin text-blue-600 dark:text-blue-400" />
+              ) : (
+                <FileJson className="w-4 h-4 text-blue-600 dark:text-blue-400" />
+              )}
+              {isImportingJson ? "Adding CV..." : "Add CV from JSON"}
               <input
                 type="file"
                 accept=".json,application/json"
                 className="hidden"
-                onChange={handleImportJsonFile}
+                disabled={isImportingJson}
+                onChange={handleSingleJsonUpload}
               />
             </label>
 
@@ -193,6 +207,33 @@ export default function DashboardPage() {
             </button>
           </div>
         </div>
+
+        {jsonImportError && (
+          <div className="mt-5 p-3.5 rounded-xl bg-rose-50 dark:bg-rose-950/50 border border-rose-200 dark:border-rose-800 text-rose-800 dark:text-rose-200 text-xs flex items-start justify-between gap-3">
+            <div className="flex items-start gap-2.5">
+              <AlertCircle className="w-4 h-4 shrink-0 mt-0.5 text-rose-600 dark:text-rose-400" />
+              <div className="space-y-1">
+                <p className="font-medium">{jsonImportError.message}</p>
+                {jsonImportError.isFullBackup && (
+                  <Link
+                    href="/account"
+                    className="inline-block font-semibold underline hover:opacity-80"
+                  >
+                    Restore full backup in Account →
+                  </Link>
+                )}
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => setJsonImportError(null)}
+              aria-label="Dismiss error"
+              className="p-1 rounded-md text-rose-500 hover:bg-rose-100 dark:hover:bg-rose-900/50"
+            >
+              <X className="w-3.5 h-3.5" />
+            </button>
+          </div>
+        )}
 
         {/* Tab switchers: Resumes vs Cover Letters */}
         <div className="flex items-center gap-2 mt-8 mb-6">
@@ -237,16 +278,38 @@ export default function DashboardPage() {
                   No Resumes Created Yet
                 </h3>
                 <p className="text-xs text-neutral-500 max-w-sm mx-auto mt-1 mb-5">
-                  Start fresh with one of our 8 ATS-ready templates or import your existing PDF or DOCX.
+                  Start fresh with one of our 8 ATS-ready templates, upload a single CV JSON, or import your PDF/DOCX.
                 </p>
-                <button
-                  type="button"
-                  onClick={() => setIsNewResumeOpen(true)}
-                  className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-neutral-900 text-white dark:bg-neutral-100 dark:text-neutral-900 text-xs font-bold"
-                >
-                  <Plus className="w-4 h-4" />
-                  Create Your First Resume
-                </button>
+                <div className="flex flex-wrap items-center justify-center gap-2.5">
+                  <button
+                    type="button"
+                    onClick={() => setIsNewResumeOpen(true)}
+                    className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-neutral-900 text-white dark:bg-neutral-100 dark:text-neutral-900 text-xs font-bold"
+                  >
+                    <Plus className="w-4 h-4" />
+                    Create Your First Resume
+                  </button>
+
+                  <label
+                    className={`inline-flex items-center gap-2 px-4 py-2 rounded-xl border border-neutral-300 dark:border-neutral-700 hover:bg-neutral-100 dark:hover:bg-neutral-800 text-xs font-semibold text-neutral-800 dark:text-neutral-200 transition-colors ${
+                      isImportingJson ? "opacity-60 pointer-events-none" : "cursor-pointer"
+                    }`}
+                  >
+                    {isImportingJson ? (
+                      <Loader2 className="w-4 h-4 animate-spin text-blue-600 dark:text-blue-400" />
+                    ) : (
+                      <FileJson className="w-4 h-4 text-blue-600 dark:text-blue-400" />
+                    )}
+                    {isImportingJson ? "Adding CV..." : "Add CV from JSON"}
+                    <input
+                      type="file"
+                      accept=".json,application/json"
+                      className="hidden"
+                      disabled={isImportingJson}
+                      onChange={handleSingleJsonUpload}
+                    />
+                  </label>
+                </div>
               </div>
             ) : (
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-5">
@@ -317,6 +380,7 @@ export default function DashboardPage() {
         isOpen={isNewResumeOpen}
         onClose={() => setIsNewResumeOpen(false)}
         onCreate={handleCreateNewResume}
+        onImportJsonComplete={(newId) => router.push(`/resume/${newId}`)}
       />
 
       <ImportModal

@@ -1,4 +1,13 @@
-import { PersonalInfo, Section, SectionItem, SectionType } from "../schema";
+import {
+  PersonalInfo,
+  Section,
+  SectionItem,
+  SectionType,
+  Resume,
+  ResumeSchema,
+} from "../schema";
+import { DEFAULT_GLOBAL_DESIGN } from "../design/defaults";
+import { migrateState } from "../migrations";
 
 export interface ParsedResumeDraft {
   personal: PersonalInfo;
@@ -308,6 +317,15 @@ export function sanitizeAndValidateParsedDraft(rawDraft: any): ParsedResumeDraft
   ];
 
   const rawPersonal = rawDraft?.personal || {};
+  const extraLinks = Array.isArray(rawPersonal.extraLinks)
+    ? rawPersonal.extraLinks
+        .filter((l: any) => l && typeof l === "object" && typeof l.url === "string" && l.url.trim())
+        .map((l: any) => ({
+          label: String(l.label || "").trim(),
+          url: String(l.url).trim(),
+        }))
+    : undefined;
+
   const personal: PersonalInfo = {
     fullName: String(rawPersonal.fullName || "").trim() || "Applicant Name",
     jobTitle: rawPersonal.jobTitle ? String(rawPersonal.jobTitle).trim() : undefined,
@@ -317,6 +335,11 @@ export function sanitizeAndValidateParsedDraft(rawDraft: any): ParsedResumeDraft
     website: rawPersonal.website ? String(rawPersonal.website).trim() : undefined,
     linkedin: rawPersonal.linkedin ? String(rawPersonal.linkedin).trim() : undefined,
     github: rawPersonal.github ? String(rawPersonal.github).trim() : undefined,
+    photo:
+      typeof rawPersonal.photo === "string" && rawPersonal.photo.trim()
+        ? rawPersonal.photo.trim()
+        : undefined,
+    extraLinks: extraLinks && extraLinks.length > 0 ? extraLinks : undefined,
   };
 
   const rawSections = Array.isArray(rawDraft?.sections) ? rawDraft.sections : [];
@@ -331,6 +354,7 @@ export function sanitizeAndValidateParsedDraft(rawDraft: any): ParsedResumeDraft
     const heading = String(rawSec.heading || type.charAt(0).toUpperCase() + type.slice(1)).trim();
     const column: "main" | "side" = rawSec.column === "side" ? "side" : "main";
     const secId = rawSec.id && typeof rawSec.id === "string" ? rawSec.id : `sec-parsed-${Date.now()}-${sIdx}`;
+    const icon = rawSec.icon ? String(rawSec.icon).trim() : undefined;
 
     const rawItems = Array.isArray(rawSec.items) ? rawSec.items : [];
     const items: SectionItem[] = [];
@@ -356,6 +380,11 @@ export function sanitizeAndValidateParsedDraft(rawDraft: any): ParsedResumeDraft
         ? it.tags.split(/[,•·|]/).map((t: string) => t.trim()).filter(Boolean)
         : undefined;
 
+      const level =
+        typeof it.level === "number" && it.level >= 1 && it.level <= 5
+          ? Math.round(it.level)
+          : undefined;
+
       items.push({
         id: it.id && typeof it.id === "string" ? it.id : `item-parsed-${Date.now()}-${sIdx}-${iIdx}`,
         visible: it.visible !== false,
@@ -364,8 +393,10 @@ export function sanitizeAndValidateParsedDraft(rawDraft: any): ParsedResumeDraft
         location: it.location ? String(it.location).trim() : undefined,
         startDate: it.startDate ? String(it.startDate).trim() : undefined,
         endDate: it.endDate ? String(it.endDate).trim() : undefined,
+        link: it.link ? String(it.link).trim() : undefined,
         description: description || undefined,
         tags: tags && tags.length > 0 ? tags : undefined,
+        level,
       });
     }
 
@@ -375,6 +406,7 @@ export function sanitizeAndValidateParsedDraft(rawDraft: any): ParsedResumeDraft
       heading,
       visible: rawSec.visible !== false,
       column,
+      icon,
       items,
     });
   }
@@ -755,4 +787,140 @@ export function parseJsonResume(input: string | any): { draft: ParsedResumeDraft
       : `${draft.personal.fullName} Resume`);
 
   return { draft, title };
+}
+
+export type SingleResumeJsonBuildResult =
+  | { ok: true; resume: Resume }
+  | { ok: false; error: string; isFullBackup?: boolean };
+
+/**
+ * Validates and converts a single-CV JSON payload (exported Folio CV, mock template,
+ * or JSON Resume) into a complete, schema-validated Resume object. Rejects full DB backups.
+ */
+export function buildResumeFromSingleJson(
+  input: string | unknown,
+  options: { id: string; templateId?: string; titleOverride?: string }
+): SingleResumeJsonBuildResult {
+  let data: any = input;
+  if (typeof input === "string") {
+    try {
+      data = JSON.parse(input);
+    } catch (err: any) {
+      return {
+        ok: false,
+        error: "Invalid JSON format: " + (err?.message || "Failed to parse JSON"),
+      };
+    }
+  }
+
+  if (!data || typeof data !== "object") {
+    return {
+      ok: false,
+      error: "JSON file must contain a resume object.",
+    };
+  }
+
+  const isFullBackup =
+    Boolean(data.folio_user_data_v1) ||
+    Boolean(data.state && typeof data.state === "object" && Array.isArray(data.state.resumes)) ||
+    (Array.isArray(data.resumes) &&
+      (data.resumes.length !== 1 ||
+        "coverLetters" in data ||
+        "jobs" in data ||
+        "stylePresets" in data ||
+        "customPresets" in data ||
+        "settings" in data ||
+        "account" in data ||
+        "exportedAt" in data)) ||
+    (Array.isArray(data) && data.length !== 1);
+
+  if (isFullBackup) {
+    return {
+      ok: false,
+      isFullBackup: true,
+      error:
+        "This file is a full workspace backup, not a single CV. To restore a full backup, go to Account or Settings → Import Backup.",
+    };
+  }
+
+  let rawSingle: any = data;
+  if (Array.isArray(data)) {
+    rawSingle = data[0];
+  } else if (Array.isArray(data.resumes)) {
+    rawSingle = data.resumes[0];
+  }
+
+  if (!rawSingle || typeof rawSingle !== "object") {
+    return {
+      ok: false,
+      error: "JSON file does not contain a valid CV object.",
+    };
+  }
+
+  const hasRecognizedShape =
+    (rawSingle.basics && typeof rawSingle.basics === "object") ||
+    (rawSingle.personal && typeof rawSingle.personal === "object") ||
+    (rawSingle.personalInfo && typeof rawSingle.personalInfo === "object") ||
+    (rawSingle.profile && typeof rawSingle.profile === "object") ||
+    (rawSingle.contact && typeof rawSingle.contact === "object") ||
+    Array.isArray(rawSingle.sections);
+
+  if (!hasRecognizedShape) {
+    return {
+      ok: false,
+      error:
+        "Unrecognized CV JSON structure. Expected Folio CV format ('personal' & 'sections') or JSON Resume format ('basics').",
+    };
+  }
+
+  const { draft, title: parsedTitle } = parseJsonResume(rawSingle);
+
+  const now = new Date().toISOString();
+  const title = options.titleOverride?.trim() || parsedTitle || "Imported Resume";
+  const templateId =
+    options.templateId?.trim() ||
+    (typeof rawSingle.templateId === "string" && rawSingle.templateId.trim()
+      ? rawSingle.templateId.trim()
+      : "plain");
+
+  const migrated = migrateState({
+    schemaVersion: rawSingle.design?.sectionDefaults ? 2 : 0,
+    resumes: [
+      {
+        ...rawSingle,
+        id: options.id,
+        title,
+        createdAt: now,
+        updatedAt: now,
+        templateId,
+        personal: draft.personal,
+        sections: draft.sections,
+      },
+    ],
+    coverLetters: [],
+    jobs: [],
+  });
+
+  const candidate = migrated.resumes[0];
+  const parsed = ResumeSchema.safeParse(candidate);
+  if (parsed.success) {
+    return { ok: true, resume: parsed.data };
+  }
+
+  // Fallback to default design if imported custom design contains out-of-range overrides
+  const fallbackParsed = ResumeSchema.safeParse({
+    ...candidate,
+    design: { ...DEFAULT_GLOBAL_DESIGN },
+    headerDesign: {},
+    sectionDesigns: {},
+  });
+  if (fallbackParsed.success) {
+    return { ok: true, resume: fallbackParsed.data };
+  }
+
+  const issue = fallbackParsed.error.issues[0];
+  return {
+    ok: false,
+    error: `Resume data failed validation: ${issue ? `${issue.path.join(".")}: ${issue.message}` : "Invalid fields"}`,
+  };
 }
